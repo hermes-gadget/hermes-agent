@@ -272,3 +272,48 @@ class TestDenyOrdering:
         assert "git push --force*" in msg
         assert "retry" in msg.lower()
         assert "rephrase" in msg.lower()
+
+
+class TestWordBoundaryAndRegionScoping:
+    """HermesMind #339/#341: rm must be a command TOKEN and rm + protected path
+    must co-occur in the SAME shell region of the candidate."""
+
+    def test_rm_lookalike_words_do_not_match(self, deny_config):
+        deny_config(["*rm */mnt/*", "*rm *.ssh*", "*rm *backup*"])
+        for command in (
+            "confirm xfs_reprobe /mnt/disk1",
+            "perform sync --verify /mnt/disk1",
+            "bash -lc 'confirm xfs_reprobe /mnt/disk1 && echo done'",
+            "testparm -s /etc/samba/smb.conf >/dev/null && ls -la /root/.ssh/authorized_keys",
+        ):
+            assert approval_floors._match_user_deny_rule(command) is None, command
+
+    def test_cross_region_cooccurrence_does_not_match(self, deny_config):
+        deny_config(["*rm */mnt/*", "*rm *backup*"])
+        command = ("ssh diskhost 'rm -rf /tmp/toys && mkdir -p /tmp/toys' && "
+                   "ssh diskhost 'du -sh /mnt/disk3/backups'")
+        assert approval_floors._match_user_deny_rule(command) is None
+        assert approval_floors._match_user_deny_rule(
+            "rm -rf /tmp/x; mount | grep /mnt/disk3") is None
+
+    def test_same_region_protected_paths_still_block(self, deny_config):
+        deny_config(["*rm */mnt/*", "*rm */mnt", "*rm *.ssh*", "*rm *.gnupg*"])
+        for command in (
+            "rm -rf /mnt/disk1/foo",
+            "sudo rm -rf /mnt/disk1/foo",
+            "cd /tmp && rm -rf /mnt/disk1/foo",
+            "bash -c 'rm -rf /mnt/disk1/x'",
+            "rm -rf /mnt",
+            "rm -f /root/.ssh/authorized_keys",
+            "rm -rf ~/.gnupg",
+        ):
+            assert approval_floors._match_user_deny_rule(command), command
+
+    def test_rm_token_boundary_for_rm_only_globs(self, deny_config):
+        deny_config(["*rm -rf*", "rm *", "* rm -v *"])
+        for command in ("rm -rf /tmp/x", "sudo rm -rf /tmp/x",
+                        "echo $(rm -rf /tmp/x)", "cd /tmp\nrm -rf scratch"):
+            assert approval_floors._match_user_deny_rule(command), command
+        for command in ("confirm -rf /tmp/x", "testparm -rf /etc/x",
+                        "perform -v cleanup"):
+            assert approval_floors._match_user_deny_rule(command) is None, command

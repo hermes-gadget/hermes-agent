@@ -9,6 +9,7 @@ through it at call time.
 
 import contextlib
 import fnmatch
+import functools
 import logging
 import re
 import time
@@ -18,6 +19,62 @@ from tools.approval_detection import (
     _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
 
 logger = logging.getLogger("tools.approval")
+
+
+# ── User deny globs: matching semantics ──────────────────────────────────────
+# Plain fnmatch over the whole blob produced two classes of false positives
+# (HermesMind #339/#341, 2026-09-20), painful enough to hard-block attended
+# sessions:
+#   * "*rm *" matched the letters inside "confirm" / "testparm" — an rm hit
+#     must be a command TOKEN, not a substring of a longer word.
+#   * an rm in one shell segment plus a protected path in a DIFFERENT segment
+#     of the same blob co-occurred into a match
+#     ("ssh a 'rm -rf /tmp/x' && ssh b 'du -sh /mnt/disk3'").
+# Rules:
+#   * Every literal "rm" in a deny glob now requires a token boundary on its
+#     left (not preceded by [a-z0-9_]).
+#   * Globs that pair rm with a protected path fragment are additionally
+#     region-scoped: candidate and pattern are compared per shell region
+#     (split on ; & | newline ) and backtick), so rm and the path must appear
+#     in the SAME region. Real command starts were already marked by the
+#     detection variants, so genuine single-segment commands (including
+#     formatted/projection candidates) keep matching.
+_PROTECTED_PATH_TOKENS = ("/mnt", ".ssh", ".gnupg", ".lmstudio", "huggingface", "backup")
+_DENY_REGION_SPLIT_RE = re.compile(r"[;&|\n)`]+")
+_RM_TOKEN_RX = r"(?<![a-z0-9_])rm"
+
+
+@functools.lru_cache(maxsize=1024)
+def _deny_glob_pattern_regex(pattern: str) -> "re.Pattern[str]":
+    """Compile one deny glob to a regex with token-boundary ``rm``."""
+    rx = "".join(
+        ".*" if ch == "*" else "." if ch == "?" else re.escape(ch)
+        for ch in pattern.lower()
+    )
+    rx = rx.replace("rm", _RM_TOKEN_RX)
+    return re.compile(rx, re.DOTALL)
+
+
+def _deny_pattern_requires_same_region(pattern: str) -> bool:
+    p = pattern.lower()
+    return "rm" in p and any(token in p for token in _PROTECTED_PATH_TOKENS)
+
+
+def _deny_glob_matches(candidate: str, pattern: str) -> bool:
+    """Boundary- and region-aware match of one candidate against one deny glob."""
+    if "rm" not in pattern.lower():
+        return fnmatch.fnmatchcase(candidate, pattern.lower())
+    try:
+        rx = _deny_glob_pattern_regex(pattern)
+    except Exception:  # pragma: no cover — regex build must never gate a block
+        return fnmatch.fnmatchcase(candidate, pattern.lower())
+    if _deny_pattern_requires_same_region(pattern):
+        return any(
+            rx.fullmatch(region)
+            for region in _DENY_REGION_SPLIT_RE.split(candidate)
+            if region
+        )
+    return rx.fullmatch(candidate) is not None
 
 
 def _match_user_deny_rule(command: str) -> str | None:
@@ -37,7 +94,7 @@ def _match_user_deny_rule(command: str) -> str | None:
     for command_variant in _deny_command_variants(command):
         candidate = command_variant.lower().strip()
         for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+            if _deny_glob_matches(candidate, pattern):
                 return pattern
     return None
 
