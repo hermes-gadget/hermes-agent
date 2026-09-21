@@ -1905,3 +1905,111 @@ class TestOpenVikingEnvWriter:
         assert env.read_text(encoding="utf-8").splitlines() == [
             "A=1", "OPENAI_API_KEY=new", "B=2",
         ]
+
+
+class TestNonPrimaryContextWriteSuppression:
+    """#80646 contract: cron/subagent/flush runs read OpenViking but must never write.
+
+    A scheduled run's transcript must not become an OpenViking session or commit.
+    ``_write_enabled`` (set from the ``agent_context`` initialize kwarg) gates every
+    persistence entry point: turn uploads, session commits and their switch finalizers,
+    startup pending-session recovery, the built-in-memory mirror, and the atexit
+    registration. Reads (prefetch, viking_* tools) are untouched.
+    """
+
+    @staticmethod
+    def _context_kwargs(tmp_path, platform):
+        """Initialize kwargs exactly as the core builds them for this platform."""
+        from types import SimpleNamespace
+
+        from agent.agent_init import _GATEWAY_IDENTITY_PARAMS, _memory_provider_init_kwargs
+
+        agent = SimpleNamespace(
+            session_id="sess-context",
+            _session_db=None,
+            _emit_warning=None,
+            _emit_status=None,
+            session_cwd=None,
+            **{f"_{name}": None for name in _GATEWAY_IDENTITY_PARAMS},
+        )
+        kwargs = _memory_provider_init_kwargs(agent, platform)
+        kwargs["hermes_home"] = str(tmp_path / "hermes")
+        return kwargs
+
+    def test_initialize_switches_writes_off_for_non_primary_platforms(self, tmp_path, monkeypatch):
+        """The scheduler's real kwargs switch writes off; an interactive platform's leave
+        them on. Non-primary instances also stay out of the atexit registry, and startup
+        recovery never runs for them."""
+        _clear_openviking_env(monkeypatch)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
+
+        class _UnhealthyClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                pass
+
+            def health(self):
+                return False
+
+            def health_payload(self):
+                return {"healthy": False}
+
+        monkeypatch.setattr(openviking_module, "_VikingClient", _UnhealthyClient)
+        monkeypatch.setattr(
+            openviking_module,
+            "_start_local_openviking_server",
+            MagicMock(side_effect=AssertionError("initialize must not autostart a server")),
+        )
+
+        for platform, expected in (("cron", False), ("subagent", False), ("cli", True)):
+            provider = OpenVikingMemoryProvider()
+            provider.initialize(**self._context_kwargs(tmp_path, platform))
+
+            assert provider._write_enabled is expected, platform
+            assert (
+                openviking_module._active_providers_by_home.get(provider._hermes_home) is provider
+            ) is expected, platform
+            openviking_module._active_providers_by_home.pop(provider._hermes_home, None)
+
+        cron_provider = OpenVikingMemoryProvider()
+        cron_provider.initialize(**self._context_kwargs(tmp_path, "cron"))
+        cron_provider._client = MagicMock()  # a live-looking client must not matter
+        cron_provider._pending_sessions = MagicMock(
+            side_effect=AssertionError("startup recovery must not run for non-primary contexts")
+        )
+        cron_provider._recover_pending_sessions()
+
+    def test_non_primary_context_never_persists(self):
+        """With writes off, every persistence entry point is inert: no uploads, no
+        commits, no finalizers, no mirror, no recovery."""
+        provider = OpenVikingMemoryProvider()
+        provider._write_enabled = False
+        provider._session_id = "sess-nonprimary"
+        provider._turn_count = 1
+        fake_client = MagicMock()
+        provider._ensure_client = lambda: fake_client
+        provider._new_client = lambda: fake_client
+
+        spawned = []
+        provider._spawn_tracked = lambda name, *args, **kwargs: spawned.append(name)
+
+        provider.sync_turn("remember this fact", "acknowledged")
+        provider.on_session_end([])
+        provider.on_session_switch("sess-next")
+        provider.on_memory_write("add", "user", "a durable fact")
+
+        assert spawned == []
+        assert fake_client.post.call_count == 0
+
+    def test_primary_context_still_uploads_turns(self):
+        """Control: a primary context keeps persisting normally."""
+        provider = OpenVikingMemoryProvider()
+        provider._write_enabled = True
+        provider._session_id = "sess-primary"
+        provider._ensure_client = lambda: MagicMock()
+
+        spawned = []
+        provider._spawn_tracked = lambda name, *args, **kwargs: spawned.append(name)
+
+        provider.sync_turn("a normal user turn", "a normal reply")
+
+        assert spawned == ["openviking-sync"]

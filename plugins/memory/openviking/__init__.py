@@ -108,6 +108,10 @@ _SESSION_START_SUFFIXES = ("memories/profile.md", "memories/preferences", "memor
 _SESSION_START_LIST_PARAMS = {"output": "agent", "recursive": True, "abs_limit": 512, "node_limit": 512}
 # Built-in memory tool `target` -> mirror subdir (user facts -> preferences, agent notes -> patterns).
 _MEMORY_WRITE_TARGET_SUBDIR_MAP = {"user": "preferences", "memory": "patterns"}
+# MemoryProvider.initialize contract (#80646): non-primary contexts (cron/subagent/flush)
+# read memory but must skip writes — a scheduled run's transcript must never become an
+# OpenViking session or generate extraction work. Mirrored in `_write_enabled`.
+_WRITE_SUPPRESSED_AGENT_CONTEXTS = frozenset({"cron", "subagent", "flush"})
 # OpenViking-generated summaries; non-.md sidecars are already rejected by the .md check.
 _GENERATED_MEMORY_SUMMARY_FILENAMES = {".abstract.md", ".overview.md"}
 _LOCAL_OPENVIKING_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -1244,6 +1248,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._runtime_start_thread: Optional[threading.Thread] = None
         self._runtime_start_pending = False
         self._shutting_down = False  # finalizers stop issuing network writes
+        # initialize() narrows this from the agent_context kwarg (#80646); instances that
+        # never went through initialize() keep primary-like write capability.
+        self._write_enabled = True
 
     @property
     def name(self) -> str:
@@ -1403,6 +1410,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._env_refresh_enabled = True
         self._session_id = session_id
         self._turn_count = 0
+        # MemoryProvider.initialize contract (#80646): non-primary contexts (cron/subagent/
+        # flush) read OpenViking but skip every write path.
+        self._write_enabled = str(kwargs.get("agent_context") or "") not in _WRITE_SUPPRESSED_AGENT_CONTEXTS
         self._hermes_home = str(kwargs.get("hermes_home") or "").strip() or str(get_hermes_home())
         self._acquire_run_lock()
         self._profile_prefetched_sessions.clear()
@@ -1428,7 +1438,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._conn_snapshot = self._settings_tuple()
             self._recover_pending_sessions()
 
-        _active_providers_by_home[self._hermes_home] = self  # atexit safety net
+        # atexit safety net — write-capable instances only, so a non-primary provider can
+        # neither commit at process exit nor displace the primary provider's registration.
+        if self._write_enabled:
+            _active_providers_by_home[self._hermes_home] = self
 
     def _ensure_client(self) -> Optional["_VikingClient"]:
         """Active client, rebuilt if the resolved config changed.
@@ -2014,6 +2027,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "",
                   messages: Optional[List[Dict[str, Any]]] = None) -> None:
         """Record the conversation turn in OpenViking's session (non-blocking)."""
+        if not self._write_enabled:
+            return  # non-primary context (#80646): the transcript never reaches OpenViking
         if not self._ensure_client():
             return
         user_content = _derive_openviking_user_text(user_content)
@@ -2262,7 +2277,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def _recover_pending_sessions(self) -> None:
         """Commit sessions left pending by dead runs, one thread per former owner."""
-        if not self._client:
+        if not self._write_enabled or not self._client:
             return
         pending_by_owner: Dict[str, List[str]] = {}
         for sid, owner_run_id in self._pending_sessions():
@@ -2342,6 +2357,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Commit the session (synchronously — it must land before process exit) to
         trigger extraction of profile/preferences/entities/events/cases/patterns."""
+        if not self._write_enabled:
+            return  # non-primary context (#80646): nothing was uploaded, nothing to commit
         if not self._ensure_client():
             return
         with self._session_state_lock:
@@ -2369,6 +2386,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         The new session never accumulates messages, and memory extraction never fires for it. See
         hermes-agent#28296.
         """
+        if not self._write_enabled:
+            return  # non-primary context (#80646): holds no OpenViking session to finalize
         new_id = str(new_session_id or "").strip()
         if not new_id or not self._ensure_client():
             return
@@ -2430,7 +2449,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Mirror successful built-in memory additions to OpenViking."""
-        if action != "add" or not content or not self._ensure_client():
+        # Non-primary contexts (#80646) skip only the OpenViking mirror; the built-in
+        # MEMORY.md/USER.md store still updates normally (#91447).
+        if not self._write_enabled or action != "add" or not content or not self._ensure_client():
             return
         subdir = _MEMORY_WRITE_TARGET_SUBDIR_MAP.get(target, "preferences")
         try:

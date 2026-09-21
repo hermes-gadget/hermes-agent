@@ -38,7 +38,7 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   serves, re-enumerate when a profile dir appears or is tombstoned) is per served home, not per
   process. Why: a store opened before the scope was entered wrote a secondary profile's run
   records into the launch profile's `jobs.json`.
-- Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
+- Cron sessions run with `skip_memory=False` (#91447: the built-in MEMORY.md store loads/updates like any other agent) while memory providers receive `agent_context="cron"` and must skip writes for non-primary contexts (#80646) — a cron transcript never persists to a memory backend.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
   or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
