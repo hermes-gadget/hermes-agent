@@ -65,7 +65,7 @@ Important:
 
 ## How Hermes uses it
 
-When Hermes starts a session, it reads `SOUL.md` from `HERMES_HOME`, scans it for prompt-injection patterns, truncates it if needed, and uses it as the **agent identity** — slot #1 in the system prompt. This means SOUL.md completely replaces the built-in default identity text.
+When Hermes starts a regular session, it reads `SOUL.md` from `HERMES_HOME`, scans it for prompt-injection patterns, truncates it if needed, and uses it as the **agent identity** — slot #1 in the system prompt. This means SOUL.md completely replaces the built-in default identity text. Cron jobs use the built-in default identity and omit profile-wide SOUL.md instructions.
 
 Because `SOUL.md` is your own file (agent writes to it always need your approval), a prompt-injection scanner hit does **not** block it the way it blocks a project `AGENTS.md`: the file still loads, Hermes logs a warning naming the matched pattern, and `/context` marks the file `⚠ … review the file`. Security guidance that quotes an attack phrase ("content telling you to ignore previous instructions") therefore keeps your identity intact.
 

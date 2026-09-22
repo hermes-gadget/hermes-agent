@@ -215,7 +215,7 @@ hermes cron add \
 - **cron 触发时必须存在活跃设备。** 若没有 Spotify 客户端在运行（手机/桌面端/Connect 音箱），播放操作将返回 `403 no active device`。对于早晨播放列表，建议指定一个始终开机的设备（Sonos、Echo、智能音箱），而非手机。
 - **任何修改播放状态的操作都需要 Premium**——播放、暂停、跳曲、音量、切换设备。只读 cron 任务（例如定时"发送我最近播放的曲目"）在免费版上可正常使用。
 - **cron agent 继承你的活跃工具集。** Spotify 必须在 `hermes tools` 中启用，cron 会话才能看到 Spotify 工具。
-- **Cron 任务以 `skip_memory=True` 运行**，不会写入你的记忆存储。
+- **Cron 提示不会预加载 profile 级记忆或 SOUL.md，也会跳过自动外部记忆检索。** 启用相应工具集后，memory 工具/存储仍可使用；外部 memory provider 会收到 `agent_context="cron"`，且必须跳过非主会话的写入。
 
 完整 cron 参考：[Cron Jobs](./cron)。
 

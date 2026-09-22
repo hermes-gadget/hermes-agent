@@ -215,7 +215,7 @@ hermes cron add \
 - **An active device must exist when the cron fires.** If no Spotify client is running (phone/desktop/Connect speaker), playback actions return `403 no active device`. For morning playlists, the trick is to target a device that's always on (Sonos, Echo, a smart speaker) rather than your phone.
 - **Premium required for anything that mutates playback** — play, pause, skip, volume, transfer. Read-only cron jobs (scheduled "email me my recently played tracks") work fine on Free.
 - **The cron agent inherits your active toolsets.** Spotify must be enabled in `hermes tools` for the cron session to see the Spotify tools.
-- **Cron jobs run with `skip_memory=True`** so they don't write to your memory store.
+- **Cron prompts do not preload profile memory or SOUL.md, and automatic external-memory recall is skipped.** The memory tool/store can still be used when its toolset is enabled; external memory providers receive `agent_context="cron"` and must skip writes for non-primary sessions.
 
 Full cron reference: [Cron Jobs](./cron).
 

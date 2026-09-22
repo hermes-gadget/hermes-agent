@@ -749,7 +749,7 @@ cronjob(action="create", name="daily-digest",
 ## 自包含的 prompt 仍然重要
 
 :::warning 重要
-Cron 任务在完全全新的 agent 会话中运行。Prompt 必须包含 agent 所需的一切，除非已由附加的 skill 提供。
+Cron 任务在完全全新的 agent 会话中运行。不会预加载 profile 级 SOUL.md 或记忆，也会跳过自动外部记忆检索；默认 Hermes 身份、配置的 workdir 上下文和附加 skill 仍保留。Prompt 必须包含 agent 所需的其他一切。
 :::
 
 **错误：** `"Check on that server issue"`

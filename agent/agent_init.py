@@ -2288,7 +2288,8 @@ def init_agent(
       prefill_messages: priming history. Anthropic Sonnet/Opus 4.6+ 400 on a trailing
         assistant message — use structured outputs there instead.
       skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md/.cursorrules injection;
-        load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
+        load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless, except cron sessions
+        which use the default identity and suppress profile-wide standing context.
     """
     _install_safe_stdio()
 

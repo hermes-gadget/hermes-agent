@@ -128,6 +128,107 @@ def test_memory_guidance_respects_available_writes(stores, names, monkeypatch, t
         assert "never target='memory'" in prompt
 
 
+def _standing_context_agent(platform, *, skip_context_files):
+    from unittest.mock import Mock
+
+    memory_manager = SimpleNamespace(build_system_prompt=Mock(return_value="EXTERNAL_MEMORY_DIRECTIVE"))
+    return _make_agent(
+        platform=platform,
+        load_soul_identity=True,
+        skip_context_files=skip_context_files,
+        valid_tool_names={"memory"},
+        _memory_enabled=True,
+        _user_profile_enabled=True,
+        _memory_store=SimpleNamespace(
+            format_for_system_prompt=lambda kind: f"{kind.upper()}_STANDING_DIRECTIVE"
+        ),
+        _memory_manager=memory_manager,
+        tools=[{"function": {"name": "memory"}}],
+        enabled_toolsets=["memory"],
+        disabled_toolsets=[],
+    )
+
+
+def test_only_cron_prompt_excludes_profile_standing_context(monkeypatch):
+    from unittest.mock import Mock
+
+    project_context = "PROJECT_WORKDIR_CONTEXT"
+    context_file_builder = Mock(return_value=project_context)
+    soul_loader = Mock(return_value="FULL_AUTO_MODE_STANDING_BLOCK")
+    memory_guidance = Mock(return_value="MEMORY_TOOL_GUIDANCE_BLOCK")
+    monkeypatch.setattr("agent.prompt_builder.build_context_files_prompt", context_file_builder)
+    monkeypatch.setattr("agent.prompt_builder.load_soul_md", soul_loader)
+    monkeypatch.setattr("agent.prompt_builder.build_memory_guidance", memory_guidance)
+
+    cron_agent = _standing_context_agent("cron", skip_context_files=False)
+    cron_prompt = build_system_prompt(cron_agent, system_message="CRON_JOB_CONTEXT")
+
+    assert "You are Hermes Agent" in cron_prompt
+    assert "CRON_JOB_CONTEXT" in cron_prompt
+    assert project_context in cron_prompt
+    assert "FULL_AUTO_MODE_STANDING_BLOCK" not in cron_prompt
+    assert "MEMORY_STANDING_DIRECTIVE" not in cron_prompt
+    assert "USER_STANDING_DIRECTIVE" not in cron_prompt
+    assert "EXTERNAL_MEMORY_DIRECTIVE" not in cron_prompt
+    assert "MEMORY_TOOL_GUIDANCE_BLOCK" not in cron_prompt
+    assert context_file_builder.call_args.kwargs["skip_soul"] is True
+    soul_loader.assert_not_called()
+    cron_agent._memory_manager.build_system_prompt.assert_not_called()
+
+    monkeypatch.setattr("agent.memory_manager.memory_provider_tools_exposed", lambda _agent: True)
+    cli_agent = _standing_context_agent("cli", skip_context_files=True)
+    cli_prompt = build_system_prompt(cli_agent, system_message="INTERACTIVE_CONTEXT")
+
+    assert "INTERACTIVE_CONTEXT" in cli_prompt
+    assert "FULL_AUTO_MODE_STANDING_BLOCK" in cli_prompt
+    assert "MEMORY_STANDING_DIRECTIVE" in cli_prompt
+    assert "USER_STANDING_DIRECTIVE" in cli_prompt
+    assert "EXTERNAL_MEMORY_DIRECTIVE" in cli_prompt
+    assert "MEMORY_TOOL_GUIDANCE_BLOCK" in cli_prompt
+    soul_loader.assert_called_once()
+    memory_guidance.assert_called_once()
+
+
+def test_cron_standing_context_suppression_does_not_leak_across_homes(monkeypatch, tmp_path):
+    from tools.memory_tool_store import MemoryStore
+
+    def build_prompt(home, platform):
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        store = MemoryStore(memory_enabled=True, user_profile_enabled=True)
+        store.load_from_disk()
+        agent = _make_agent(
+            platform=platform,
+            load_soul_identity=True,
+            skip_context_files=True,
+            _memory_enabled=True,
+            _user_profile_enabled=True,
+            _memory_store=store,
+        )
+        return build_system_prompt(agent, system_message="JOB_SPECIFIC_CONTEXT")
+
+    homes = {name: tmp_path / name for name in ("a", "b")}
+    for name, home in homes.items():
+        (home / "memories").mkdir(parents=True)
+        (home / "SOUL.md").write_text(f"{name.upper()}_SOUL_DIRECTIVE")
+        (home / "memories" / "MEMORY.md").write_text(f"{name.upper()}_MEMORY_DIRECTIVE")
+        (home / "memories" / "USER.md").write_text(f"{name.upper()}_USER_DIRECTIVE")
+
+    prompt_a_before = build_prompt(homes["a"], "cli")
+    prompt_b_cron = build_prompt(homes["b"], "cron")
+    prompt_a_after = build_prompt(homes["a"], "cli")
+
+    for prompt in (prompt_a_before, prompt_a_after):
+        assert "A_SOUL_DIRECTIVE" in prompt
+        assert "A_MEMORY_DIRECTIVE" in prompt
+        assert "A_USER_DIRECTIVE" in prompt
+        assert "B_SOUL_DIRECTIVE" not in prompt
+    assert "JOB_SPECIFIC_CONTEXT" in prompt_b_cron
+    assert "You are Hermes Agent" in prompt_b_cron
+    assert "SOUL_DIRECTIVE" not in prompt_b_cron
+    assert "MEMORY_DIRECTIVE" not in prompt_b_cron
+    assert "USER_DIRECTIVE" not in prompt_b_cron
+
+
 class TestContextFileCwd:
     def test_none_when_terminal_cwd_unset(self, monkeypatch):
         # Unset → None, so discovery falls back to the launch dir inside

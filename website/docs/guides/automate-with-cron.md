@@ -127,7 +127,7 @@ Otherwise, provide a concise summary of the activity." --name "Repo watcher" --d
 ```
 
 :::warning Self-Contained Prompts
-Notice how the prompt includes the exact `gh` commands. The cron agent has no conversation history from previous runs — spell everything out. (Persistent memory does load, so durable preferences saved to MEMORY.md carry over, but don't rely on it for job-critical details.)
+Notice how the prompt includes the exact `gh` commands. The cron agent has no conversation history from previous runs — spell everything out. Profile-wide SOUL.md and memory content are not preloaded and automatic external-memory recall is skipped; keep the job's required instructions and facts here.
 :::
 
 ---

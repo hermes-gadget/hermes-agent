@@ -192,7 +192,7 @@ Get a morning overview and an evening recap:
 
 ### Adding Personal Context with Memory
 
-If you have [memory](../user-guide/features/memory.md) enabled, you can store preferences that persist across sessions. But remember — cron jobs run in fresh sessions without conversational memory. To add personal context, bake it directly into the prompt:
+If you have [memory](../user-guide/features/memory.md) enabled, you can store preferences for interactive sessions. Cron prompts do not preload profile memory or automatically recall external memories, so add any briefing-specific personal context directly to the prompt:
 
 ```
 /cron add "0 8 * * *" "You are creating a briefing for a senior ML engineer who cares about: PyTorch ecosystem, transformer architectures, open-weight models, and AI regulation in the EU. Skip stories about product launches or funding rounds unless they involve open source.

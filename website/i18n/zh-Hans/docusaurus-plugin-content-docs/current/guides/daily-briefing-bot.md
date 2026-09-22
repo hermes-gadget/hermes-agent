@@ -188,7 +188,7 @@ Collect all results and combine them into a single clean briefing with section h
 
 ### 通过 Memory 添加个人上下文
 
-如果你启用了 [memory（记忆）](../user-guide/features/memory.md)，可以存储跨会话持久保留的偏好设置。但请记住 — cron 任务在全新会话中运行，不保留对话记忆。若要添加个人上下文，请直接将其写入 prompt：
+如果你启用了 [memory（记忆）](../user-guide/features/memory.md)，可以为交互会话存储持久偏好。Cron 提示不会预加载 profile 级记忆，也不会自动检索外部记忆；若要添加简报相关的个人上下文，请直接写入 prompt：
 
 ```
 /cron add "0 8 * * *" "You are creating a briefing for a senior ML engineer who cares about: PyTorch ecosystem, transformer architectures, open-weight models, and AI regulation in the EU. Skip stories about product launches or funding rounds unless they involve open source.

@@ -254,9 +254,11 @@ agent↔Nous wire contract lives in [Chronos managed-cron contract](chronos-mana
 Each cron job runs in a completely fresh agent session:
 
 - No conversation history from previous runs
-- No memory of previous cron executions (persistent memory — MEMORY.md /
-  USER.md — does load, like any other agent run, so durable preferences and
-  facts carry over; per-run conversation context does not)
+- No profile-wide standing context: SOUL.md, MEMORY.md, USER.md, and external
+  memory-provider prompt blocks are not injected, and automatic external-memory
+  prefetch is skipped. The default Hermes identity, configured workdir context,
+  and this run's job prompt remain. The memory tool/store may still be available
+  when enabled, but its contents are not preloaded into the cron prompt.
 - The prompt must be self-contained — cron jobs cannot ask clarifying questions
 - The `cronjob` toolset is disabled (recursion guard)
 

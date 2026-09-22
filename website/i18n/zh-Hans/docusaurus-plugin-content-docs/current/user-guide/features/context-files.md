@@ -20,7 +20,7 @@ Hermes Agent 会自动发现并加载上下文文件，以塑造其行为方式�
 | **.cursor/rules/*.mdc** | Cursor IDE 规则模块 | 仅 CWD |
 
 :::info 优先级系统
-每次会话仅加载**一种**项目上下文类型（先匹配先生效）：`.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`。**SOUL.md** 始终作为 agent 身份独立加载（插槽 #1）。
+每次会话仅加载**一种**项目上下文类型（先匹配先生效）：`.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`。常规会话会将 **SOUL.md** 作为 agent 身份独立加载（插槽 #1）；Cron 会话使用 Hermes 默认身份并省略 SOUL.md。
 :::
 
 ## AGENTS.md

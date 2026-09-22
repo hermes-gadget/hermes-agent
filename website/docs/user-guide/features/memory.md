@@ -35,7 +35,7 @@ content must be shortened (or another entry removed) to fit.
 
 ## How Memory Appears in the System Prompt
 
-At the start of every session, memory entries are loaded from disk and rendered into the system prompt as a frozen block:
+At the start of regular interactive sessions, memory entries are loaded from disk and rendered into the system prompt as a frozen block. Cron sessions deliberately omit profile-wide SOUL.md, MEMORY.md, and USER.md context; their job prompt and configured workdir context are kept instead.
 
 ```
 ══════════════════════════════════════════════
@@ -54,7 +54,7 @@ The format includes:
 - Individual entries separated by `§` (section sign) delimiters
 - Entries can be multiline
 
-**Frozen snapshot pattern:** The system prompt injection is captured once at session start and never changes mid-session. This is intentional — it preserves the LLM's prefix cache for performance. When the agent adds/removes memory entries during a session, the changes are persisted to disk immediately but won't appear in the system prompt until the next session starts. Tool responses always show the live state.
+**Frozen snapshot pattern:** In sessions that load profile memory, the system prompt injection is captured once at session start and never changes mid-session. This is intentional — it preserves the LLM's prefix cache for performance. When the agent adds/removes memory entries during a session, the changes are persisted to disk immediately but won't appear in the system prompt until the next session starts. Tool responses always show the live state.
 
 ## Memory Needs Session Boundaries
 
@@ -72,7 +72,7 @@ The agent uses the `memory` tool with these actions:
 - **replace** — Replace an existing entry with updated content (uses substring matching via `old_text`)
 - **remove** — Remove an entry that's no longer relevant (uses substring matching via `old_text`)
 
-There is no `read` action — memory content is automatically injected into the system prompt at session start. The agent sees its memories as part of its conversation context.
+There is no built-in `read` action. Regular sessions receive a frozen memory snapshot in the system prompt; cron sessions do not preload it or automatically prefetch external memories. A configured memory tool may still be available to the cron agent for explicit operations.
 
 ### Substring Matching
 

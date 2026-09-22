@@ -277,7 +277,9 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
     # would steer the model at a tool that always answers "Memory is not
     # available"; with only USER.md enabled the narrower block is used.
     memory_guidance = None
-    if "memory" in names:
+    # Cron may retain the memory tool when a job explicitly enables it, but its
+    # prompt must not inherit global memory policy or standing directives.
+    if "memory" in names and agent.platform != "cron":
         memory_guidance = _pb.build_memory_guidance(
             getattr(agent, "_memory_enabled", True),
             getattr(agent, "_user_profile_enabled", True),
@@ -514,8 +516,11 @@ def _timestamp_line(agent: Any) -> str:
 def _memory_parts(agent: Any) -> List[str]:
     """Built-in memory/USER.md blocks plus the external provider block (gated on
     the same check ``inject_memory_provider_tools`` uses, so we never advertise
-    tools the toolset config gated off)."""
+    tools the toolset config gated off). Cron sessions do not preload any of
+    these blocks into their prompt."""
     parts: List[str] = []
+    if agent.platform == "cron":
+        return parts
     if agent._memory_store:
         for enabled, kind in ((agent._memory_enabled, "memory"), (agent._user_profile_enabled, "user")):
             block = agent._memory_store.format_for_system_prompt(kind) if enabled else None
@@ -540,9 +545,14 @@ def _memory_parts(agent: Any) -> List[str]:
 
 
 def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool]:
-    """SOUL.md (primary identity; cron keeps the persona while skipping cwd
-    instructions, scoped to the agent's OWN home) or the default identity.
-    Returns ``(parts, soul_loaded)``."""
+    """SOUL.md (scoped to the agent's own home) or the default identity.
+
+    Cron gets the default identity and suppresses SOUL.md, which can contain
+    user-wide standing instructions. The boolean says whether subsequent
+    project-context discovery must skip SOUL.md (already loaded or suppressed).
+    """
+    if agent.platform == "cron":
+        return [DEFAULT_AGENT_IDENTITY], True
     wants_soul = agent.load_soul_identity or not agent.skip_context_files
     _soul_content = _pb.load_soul_md(ctx_len, home_override=_agent_home(agent)) if wants_soul else None
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
@@ -637,7 +647,7 @@ def _post_workspace_parts(agent: Any) -> List[str]:
     return parts
 
 
-def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -> List[str]:
+def _context_files_part(agent: Any, ctx_len: Optional[int], skip_soul: bool) -> List[str]:
     """Project context files (AGENTS.md etc.) for the context tier. TERMINAL_CWD
     when set (gateway); None lets discovery fall back to the launch dir.  The
     install-tree fallback is only legitimate for cli/tui where the launch dir
@@ -647,7 +657,7 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
         return []
     launch_artifact = getattr(agent, "_context_cwd_is_launch_artifact", False)
     return [_pb.build_context_files_prompt(
-        cwd=None if launch_artifact else resolve_context_cwd(), skip_soul=soul_loaded, context_length=ctx_len,
+        cwd=None if launch_artifact else resolve_context_cwd(), skip_soul=skip_soul, context_length=ctx_len,
         allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
 
 
@@ -668,7 +678,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
     # ── Stable tier ────────────────────────────────────────────────
-    stable_parts, _soul_loaded = _identity_parts(agent, _ctx_len)
+    stable_parts, _skip_soul = _identity_parts(agent, _ctx_len)
     # The skill_view() pointer dangles without skill tools OR without the
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
@@ -695,7 +705,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ephemeral_system_prompt is injected at API-call time only, never cached.
     if system_message is not None:
         context_parts.append(system_message)
-    context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
+    context_parts.extend(_context_files_part(agent, _ctx_len, _skip_soul))
     if coding_workspace_parts:
         context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
     else:

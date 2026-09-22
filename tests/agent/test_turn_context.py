@@ -293,6 +293,19 @@ def test_prefetch_runs_for_substantive_user_message():
     assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
 
 
+def test_prefetch_is_suppressed_for_cron_without_changing_the_job_message():
+    agent, mm = _agent_with_memory_manager()
+    agent.platform = "cron"
+    query = "Summarize the latest deployment report."
+
+    ctx = _build(agent, user_message=query)
+
+    mm.on_turn_start.assert_not_called()
+    mm.prefetch_all.assert_not_called()
+    assert ctx.ext_prefetch_cache == ""
+    assert ctx.messages[ctx.current_turn_user_idx]["content"] == query
+
+
 # ── Per-turn author ──────────────────────────────────────────────────────────
 
 

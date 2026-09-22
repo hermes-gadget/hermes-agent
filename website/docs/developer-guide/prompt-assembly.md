@@ -277,7 +277,7 @@ This separation keeps the stable prefix stable for caching.
 
 ## Memory snapshots
 
-Local memory and user profile data are captured in the system prompt's **volatile tier**. Mid-session writes update disk state but do not mutate the already-built cached system prompt until a rebuild path runs (new session, or explicit invalidation/rebuild flow such as compression-triggered rebuild).
+Local memory and user profile data are captured in the system prompt's **volatile tier** for regular sessions. Cron sessions suppress profile-wide identity and memory blocks and skip automatic external-memory prefetch. Mid-session writes update disk state but do not mutate the already-built cached system prompt until a rebuild path runs (new session, or explicit invalidation/rebuild flow such as compression-triggered rebuild).
 
 ## Context files
 

@@ -37,10 +37,11 @@ the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
   (run in a specific dir with its `AGENTS.md` / `CLAUDE.md` loaded),
   multi-platform delivery.
 - **Invariants:** 3-minute hard interrupt per run, `.tick.lock` file
-  prevents duplicate ticks across processes, cron sessions pass
-  `skip_memory=True` by default, and cron deliveries are framed with a
-  header/footer instead of being mirrored into the target gateway
-  session (keeps role alternation intact).
+  prevents duplicate ticks across processes, cron prompts omit profile-wide
+  SOUL.md and memory context and skip automatic external-memory recall, while
+  configured memory tools remain available; cron deliveries are framed with a
+  header/footer instead of being mirrored into the target gateway session
+  (keeps role alternation intact).
 
 User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/cron
 

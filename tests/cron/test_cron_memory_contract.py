@@ -1,4 +1,4 @@
-"""Contract pin: cron <-> persistent-memory loading.
+"""Contract pin: cron memory availability and prompt isolation.
 
 This contract FLIPPED TWICE in August 2026 and must never flip silently again:
 
@@ -12,11 +12,13 @@ This contract FLIPPED TWICE in August 2026 and must never flip silently again:
     *external memory provider* path (built-in MEMORY.md/USER.md store follows
     the normal ``not skip_memory or memory-toolset-requested`` rule).
 
-CURRENT INTENDED MATRIX (as of PR #91447, pinned here):
+CURRENT INTENDED MATRIX (store/tool availability from PR #91447; prompt scope from #228):
 
-  default cron job          -> skip_memory=False; MEMORY.md/USER.md load into
-                               the system prompt; ``memory`` toolset follows
-                               normal resolution (NOT policy-denied).
+  default cron job          -> skip_memory=False; the built-in memory store
+                               remains available to the memory tool, but
+                               MEMORY.md/USER.md and provider blocks do not
+                               load into the prompt, and external prefetch is
+                               skipped.
   per-job enabled_toolsets  -> naming ``memory`` keeps it; skip_memory stays
                                False.
   config.yaml
@@ -28,17 +30,21 @@ CURRENT INTENDED MATRIX (as of PR #91447, pinned here):
                                per-job/config toggle — the scheduler always
                                passes False.
 
-ANY future flip of this behavior MUST consciously edit this test and cite
-the issue/PR that decided the flip in the module docstring above, extending
-the flip history. Do not "fix" a failure here by inverting an assertion
-without that citation.
+The #228 prompt boundary deliberately does not flip PR #91447's store/tool
+availability contract: it suppresses profile-wide prompt context only for
+``platform="cron"``. Interactive sessions keep SOUL.md and memory injection.
+
+ANY future flip of store/tool availability MUST consciously edit this test
+and cite the issue/PR that decided the flip in the module docstring above,
+extending the flip history. Do not "fix" a failure here by inverting an
+assertion without that citation.
 
 Tests drive the REAL ``cron.scheduler.run_job`` path and capture the actual
 kwargs the scheduler passes to AIAgent (patched at ``run_agent.AIAgent``,
 matching tests/cron/test_scheduler.py's pattern). The ON direction (default
 skip_memory=False, memory not denylisted, per-job memory toolset kept) is
-already pinned by tests/cron/test_scheduler.py::test_run_job_*memory*; this
-module pins the OFF direction and the "no per-job knob" rule.
+already pinned by tests/cron/test_scheduler.py::test_run_job_*memory*; prompt
+injection is verified in tests/agent/test_system_prompt.py.
 """
 
 from __future__ import annotations
@@ -86,7 +92,7 @@ def _run_job_patches(tmp_path):
 
 
 class TestCronMemoryContractOn:
-    """Direction (a): default cron agents GET persistent memory (#91447)."""
+    """Direction (a): cron keeps explicit memory-tool access (#91447)."""
 
     def test_resolver_denylist_has_no_memory_entry(self):
         """_resolve_cron_disabled_toolsets({}) itself never emits 'memory'."""

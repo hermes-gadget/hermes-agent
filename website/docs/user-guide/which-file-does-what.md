@@ -12,26 +12,26 @@ description: "SOUL.md vs USER.md vs MEMORY.md vs AGENTS.md — a one-page map of
 
 | File | What it holds | Who writes it | When the agent sees it | Where it lives |
 |------|---------------|---------------|------------------------|----------------|
-| **SOUL.md** | The agent's primary identity — personality, tone, communication style, what to avoid stylistically | You. Hermes seeds a starter file automatically if one doesn't exist; existing files are never overwritten | Slot #1 of the system prompt, at session start | `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md` with a custom home) — never the working directory |
-| **USER.md** | User profile — your name, role, preferences, communication style, expectations | The agent, via the `memory` tool (you can gate saves with `write_approval`, or edit entries via `hermes journey edit`) | Injected into the system prompt as a frozen snapshot at session start | `~/.hermes/memories/` |
-| **MEMORY.md** | Agent's personal notes — environment facts, project conventions, tool quirks, things learned | The agent, via the `memory` tool (same gating and editing options as USER.md) | Injected into the system prompt as a frozen snapshot at session start | `~/.hermes/memories/` |
+| **SOUL.md** | The agent's primary identity — personality, tone, communication style, what to avoid stylistically | You. Hermes seeds a starter file automatically if one doesn't exist; existing files are never overwritten | Slot #1 for regular agent sessions. Cron uses the default Hermes identity so profile-wide standing instructions do not carry into scheduled tasks | `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md` with a custom home) — never the working directory |
+| **USER.md** | User profile — your name, role, preferences, communication style, expectations | The agent, via the `memory` tool (you can gate saves with `write_approval`, or edit entries via `hermes journey edit`) | Injected into regular-session prompts as a frozen snapshot; not preloaded into cron prompts | `~/.hermes/memories/` |
+| **MEMORY.md** | Agent's personal notes — environment facts, project conventions, tool quirks, things learned | The agent, via the `memory` tool (same gating and editing options as USER.md) | Injected into regular-session prompts as a frozen snapshot; not preloaded into cron prompts | `~/.hermes/memories/` |
 | **AGENTS.md** | Project instructions, conventions, architecture — commands, ports, paths, repo-specific workflows | You (or whoever authors the project) | Loaded into the system prompt at startup from your working directory; nested copies are discovered progressively as the agent navigates subdirectories | Project working directory + subdirectories |
 | **.hermes.md** / **HERMES.md** | Project instructions, like AGENTS.md but Hermes-specific and highest priority | You | Loaded into the system prompt at startup (first match wins over AGENTS.md) | Your project — discovery walks up to the git root |
 
 :::info One project context file per session
-Only **one** project context type is loaded per session, first match wins: `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. `SOUL.md` is always loaded independently as the agent identity — it is not part of that priority chain. See [Context Files](./features/context-files.md) for the full list, including `CLAUDE.md` and `.cursorrules` compatibility.
+Only **one** project context type is loaded per session, first match wins: `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. In regular sessions, `SOUL.md` is loaded independently as the agent identity — it is not part of that priority chain. Cron sessions omit it. See [Context Files](./features/context-files.md) for the full list, including `CLAUDE.md` and `.cursorrules` compatibility.
 :::
 
 A useful shorthand:
 
-- **SOUL.md** is who the agent *is* — if it should follow you everywhere, it belongs here.
+- **SOUL.md** is who the agent *is* in regular sessions. Cron jobs use the default identity and should put task instructions in the job prompt.
 - **USER.md** is who *you* are — the agent maintains it for you.
 - **MEMORY.md** is what the agent has *learned* — it maintains this itself too.
 - **AGENTS.md** (or `.hermes.md`) is what the *project* needs — if it belongs to a project, it belongs here.
 
 ## "Why did it forget what I just said?"
 
-Memory (MEMORY.md and USER.md) is injected into the system prompt as a **frozen snapshot** captured once at session start — when the agent saves something mid-session, the change is persisted to disk immediately but won't appear in the system prompt until the next session starts. This is intentional: it preserves the LLM's prefix cache for performance, and tool responses always show the live state, so nothing is lost — start a new session and the updated memory is there. Full details in [How Memory Appears in the System Prompt](./features/memory.md#how-memory-appears-in-the-system-prompt).
+Memory (MEMORY.md and USER.md) is injected into regular-session prompts as a **frozen snapshot** captured once at session start — when the agent saves something mid-session, the change is persisted to disk immediately but won't appear in the system prompt until the next regular session starts. Cron sessions omit that profile context. This is intentional: frozen snapshots preserve the LLM's prefix cache, and tool responses show live state. Full details in [How Memory Appears in the System Prompt](./features/memory.md#how-memory-appears-in-the-system-prompt).
 
 ## Common Mix-Ups
 

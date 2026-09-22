@@ -784,10 +784,11 @@ def _bind_interrupt_scope(agent: Any, ra) -> None:
 def _memory_turn_start_and_prefetch(
     agent: Any, original_user_message: Any, turn_author: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Notify memory providers of the new turn, then prefetch external memory once
-    before the tool loop (skipped on trivial prompts with no semantic signal).
+    """For regular sessions, notify providers then prefetch external memory once
+    before the tool loop (skipped on trivial prompts). Cron returns before
+    provider callbacks because some providers start async recall in on_turn_start.
     Returns the prefetch text (``""`` when nothing was injected)."""
-    if not agent._memory_manager:
+    if not agent._memory_manager or agent.platform == "cron":
         return ""
     _query = original_user_message if isinstance(original_user_message, str) else ""
     # The author rides along so a provider can attribute THIS turn, not whoever opened the session.

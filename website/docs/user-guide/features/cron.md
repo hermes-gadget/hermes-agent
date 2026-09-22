@@ -1344,7 +1344,7 @@ The storage uses atomic file writes so interrupted writes do not leave a partial
 ## Self-contained prompts still matter
 
 :::warning Important
-Cron jobs run in a completely fresh agent session. The prompt must contain everything the agent needs that is not already provided by attached skills.
+Cron jobs run in a completely fresh agent session. Profile-wide SOUL.md and memory content are not preloaded, and automatic external-memory recall is skipped. The default Hermes identity, configured workdir context, attached skills, and this run's job prompt remain; the memory tool/store is still available when its toolset is enabled. Put everything else the job needs in its prompt.
 :::
 
 **BAD:** `"Check on that server issue"`
