@@ -74,6 +74,22 @@ profile's `.env`:
 | `OPENVIKING_USER` | `default` | Tenant user for local/trusted mode |
 | `OPENVIKING_AGENT` | (none) | Optional peer ID for separate assistant context |
 
+Local server autostart is controlled in the active profile's `config.yaml`:
+
+```yaml
+memory:
+  openviking:
+    autostart: auto
+```
+
+`auto` (the default) starts `openviking.service` through the systemd user
+manager when that unit exists; without a unit, Hermes preserves the existing
+background `openviking-server` startup. `never` disables automatic startup.
+`spawn` explicitly selects the background process when no unit exists. A
+systemd-managed server always keeps ownership of its data directory, and Hermes
+will not spawn a competing process. A listener that answers `/health` as
+unhealthy is also left alone.
+
 When `OPENVIKING_API_KEY` is set, Hermes lets OpenViking derive account/user
 identity from the key. In local or trusted deployments without an API key,
 Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.

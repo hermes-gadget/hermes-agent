@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from . import _autostart
+
 _SETUP_CANCELLED = object()
 _CANCEL_OPTION = ("Cancel setup", "no changes saved")
 
@@ -50,7 +52,7 @@ def _handle_unreachable_endpoint(endpoint: str, message: str, select, cancelled,
         return _SETUP_CANCELLED
     start_state, start_message = ov._start_local_openviking_server(endpoint)
     _say(start_message)
-    if start_state != ov._LOCAL_SERVER_STARTED:
+    if start_state != _autostart.LOCAL_SERVER_STARTED:
         return False
     _say("Waiting for OpenViking server to become reachable...")
     if ov._wait_for_openviking_health(endpoint, timeout_seconds=ov._LOCAL_OPENVIKING_AUTOSTART_TIMEOUT):

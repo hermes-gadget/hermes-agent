@@ -42,6 +42,7 @@ from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from utils import atomic_json_write, env_var_enabled
+from . import _autostart
 
 try:
     import fcntl
@@ -81,6 +82,15 @@ def _cfg_field(key: str, description: str, **extra) -> dict:
 _NUM = {"type": "number", "minimum": 0.25, "maximum": 60.0, "step": 0.25}
 _CONFIG_SCHEMA = [
     _cfg_field("endpoint", "OpenViking server URL", required=True, default=_DEFAULT_ENDPOINT),
+    {
+        "key": "autostart",
+        "description": (
+            "Local server startup policy: auto uses the systemd user unit when installed and otherwise starts "
+            "a child process; never disables automatic startup; spawn starts a child only when no unit exists."
+        ),
+        "default": "auto",
+        "choices": list(_autostart.AUTOSTART_MODES),
+    },
     _cfg_field("api_key", (
         "OpenViking API key (recommended; only leave blank for an explicitly "
         "unauthenticated local development server)"
@@ -117,9 +127,6 @@ _GENERATED_MEMORY_SUMMARY_FILENAMES = {".abstract.md", ".overview.md"}
 _LOCAL_OPENVIKING_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LOCAL_OPENVIKING_AUTOSTART_TIMEOUT = 60.0
 _LOCAL_OPENVIKING_PROBE_TIMEOUT = 2.0  # loopback connect budget; only guards against a wedged listener
-_LOCAL_SERVER_STARTED = "started"
-_LOCAL_SERVER_OCCUPIED = "occupied"
-_LOCAL_SERVER_FAILED = "failed"
 # After a refresh fails for an unchanged config, skip re-probing for this long so a
 # down server doesn't cost every access a 3s probe + warning under _client_refresh_lock.
 _FAILED_CONFIG_RETRY_COOLDOWN_SECONDS = 30.0
@@ -957,21 +964,32 @@ def _local_listener_suffix(endpoint: str) -> str:
 
 
 def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
+    autostart_mode = _autostart.autostart_mode(_load_hermes_openviking_config())
+    if autostart_mode == "never":
+        return _autostart.LOCAL_SERVER_DISABLED, (
+            "Local OpenViking autostart is disabled by memory.openviking.autostart: never. Start the server manually, then retry."
+        )
     try:
         host, port = _local_openviking_bind(endpoint)
     except ValueError as e:
-        return _LOCAL_SERVER_FAILED, f"Could not parse local OpenViking URL: {e}"
+        return _autostart.LOCAL_SERVER_FAILED, f"Could not parse local OpenViking URL: {e}"
     # A client-side health timeout can fire while the server is fine; spawning on
     # that alone yields a child that dies on DataDirectoryLocked every cooldown.
     # An occupied port only prevents spawning — it never proves the listener is OpenViking.
     if _local_openviking_port_is_open(host, port):
-        return _LOCAL_SERVER_OCCUPIED, (
+        return _autostart.LOCAL_SERVER_OCCUPIED, (
             f"Port {host}:{port} is occupied by {_describe_local_port_listener(host, port)}. Hermes did not start "
             "openviking-server because the listener has not passed OpenViking's /health check."
         )
+    if _autostart.systemd_user_unit_exists():
+        if autostart_mode == "spawn":
+            return _autostart.LOCAL_SERVER_MANAGED, (
+                "A systemd user unit for OpenViking exists; Hermes did not spawn a bare openviking-server process because the unit owns the server."
+            )
+        return _autostart.start_systemd_user_unit()
     server_cmd = shutil.which("openviking-server")
     if not server_cmd:
-        return _LOCAL_SERVER_FAILED, "openviking-server was not found on PATH. Start it manually, then retry."
+        return _autostart.LOCAL_SERVER_FAILED, "openviking-server was not found on PATH. Start it manually, then retry."
     log_path = get_hermes_home() / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -988,8 +1006,8 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
             subprocess.Popen([server_cmd, "--host", host, "--port", str(port)], stdout=log_file, stderr=log_file,
                              stdin=subprocess.DEVNULL, start_new_session=True, env=child_env)
     except Exception as e:
-        return _LOCAL_SERVER_FAILED, f"Could not start openviking-server: {e}"
-    return _LOCAL_SERVER_STARTED, f"Started openviking-server on {host}:{port} in the background. Logs: {log_path}"
+        return _autostart.LOCAL_SERVER_FAILED, f"Could not start openviking-server: {e}"
+    return _autostart.LOCAL_SERVER_STARTED, f"Started openviking-server on {host}:{port} in the background. Logs: {log_path}"
 
 
 def _wait_for_openviking_health(endpoint: str, *, timeout_seconds: float = 15.0, should_stop=None) -> bool:
@@ -1300,6 +1318,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             display["error"] = _format_openviking_exception(e)
             return display
         display["endpoint"] = settings.get("endpoint") or _DEFAULT_ENDPOINT
+        if "autostart" in provider_config:
+            display["autostart"] = provider_config["autostart"]
         display.update({key: settings[key] for key in ("agent", "account", "user") if settings.get(key)})
         if env_overrides := [key for key in _OPENVIKING_ENV_KEYS if key in os.environ]:
             display["env_overrides"] = ", ".join(env_overrides)
@@ -1380,10 +1400,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return
             self._runtime_start_pending = True
             start_state, start_message = _start_local_openviking_server(endpoint)
-            if start_state != _LOCAL_SERVER_STARTED:
+            if start_state != _autostart.LOCAL_SERVER_STARTED:
                 self._runtime_start_pending = False
 
-        if start_state != _LOCAL_SERVER_STARTED:
+        if start_state != _autostart.LOCAL_SERVER_STARTED:
             _emit_runtime(f"Local OpenViking server at {endpoint} is not reachable. {start_message} {_RETRY_LATER}", warning_callback)
             return
         _emit_runtime(f"{start_message} OpenViking memory is starting in the background and will attach when ready.", status_callback, kind="status")

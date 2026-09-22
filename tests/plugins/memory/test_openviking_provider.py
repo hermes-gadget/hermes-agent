@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import plugins.memory.openviking as openviking_module
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli import __version__ as _HERMES_VERSION
 from plugins.memory.openviking import (
     OpenVikingMemoryProvider,
@@ -39,6 +40,22 @@ def _clear_openviking_env(monkeypatch):
         "OPENVIKING_PROFILE_TOKEN_BUDGET",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+def _mock_systemctl(monkeypatch, *, unit_exists: bool):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args[2] == "cat":
+            return SimpleNamespace(returncode=0 if unit_exists else 1, stdout="", stderr="")
+        if args[2] == "start":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"Unexpected systemctl command: {args}")
+
+    monkeypatch.setattr(openviking_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(openviking_module._autostart, "_unit_file_exists", lambda: False)
+    return calls
 
 
 def _prompt_from_values(values: dict[str, str], *, forbidden: set[str] | None = None):
@@ -365,6 +382,7 @@ def test_local_setup_recommends_user_api_key_before_unauthenticated_mode(monkeyp
 
 def test_start_local_openviking_server_uses_endpoint_host_and_port(monkeypatch):
     popen_calls = []
+    systemctl_calls = _mock_systemctl(monkeypatch, unit_exists=False)
 
     def fake_popen(args, **kwargs):
         popen_calls.append((args, kwargs))
@@ -376,11 +394,14 @@ def test_start_local_openviking_server_uses_endpoint_host_and_port(monkeypatch):
 
     state, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
 
-    assert state == openviking_module._LOCAL_SERVER_STARTED
+    assert state == openviking_module._autostart.LOCAL_SERVER_STARTED
     assert "127.0.0.1:1934" in message
     args, kwargs = popen_calls[0]
     assert args == ["/usr/local/bin/openviking-server", "--host", "127.0.0.1", "--port", "1934"]
     assert kwargs["start_new_session"] is True
+    assert [call[0] for call in systemctl_calls] == [
+        ["systemctl", "--user", "cat", "openviking.service"]
+    ]
 
 
 def test_start_local_openviking_server_strips_pythonpath_from_child_env(monkeypatch):
@@ -391,6 +412,7 @@ def test_start_local_openviking_server_strips_pythonpath_from_child_env(monkeypa
     venv cannot be rebuilt during `hermes update`.
     """
     popen_calls = []
+    _mock_systemctl(monkeypatch, unit_exists=False)
 
     def fake_popen(args, **kwargs):
         popen_calls.append((args, kwargs))
@@ -404,7 +426,7 @@ def test_start_local_openviking_server_strips_pythonpath_from_child_env(monkeypa
 
     state, _message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
 
-    assert state == openviking_module._LOCAL_SERVER_STARTED
+    assert state == openviking_module._autostart.LOCAL_SERVER_STARTED
     _, kwargs = popen_calls[0]
     child_env = kwargs["env"]
     assert child_env is not None
@@ -435,7 +457,7 @@ def test_start_local_openviking_server_does_not_spawn_when_port_already_open(mon
 
     state, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
 
-    assert state == openviking_module._LOCAL_SERVER_OCCUPIED
+    assert state == openviking_module._autostart.LOCAL_SERVER_OCCUPIED
     assert "python-test-server (PID 4242)" in message
     assert "not passed OpenViking's /health check" in message
     assert "already running" not in message
@@ -459,7 +481,7 @@ def test_start_local_openviking_server_reports_occupied_port_without_cli_on_path
 
     state, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
 
-    assert state == openviking_module._LOCAL_SERVER_OCCUPIED
+    assert state == openviking_module._autostart.LOCAL_SERVER_OCCUPIED
     assert "unidentified process" in message
 
 
@@ -472,7 +494,7 @@ def test_start_local_openviking_server_rejects_unparseable_url_before_probing(mo
 
     state, message = openviking_module._start_local_openviking_server("http://127.0.0.1:not-a-port")
 
-    assert state == openviking_module._LOCAL_SERVER_FAILED
+    assert state == openviking_module._autostart.LOCAL_SERVER_FAILED
     assert "Could not parse local OpenViking URL" in message
 
 
@@ -512,7 +534,7 @@ def test_runtime_reports_occupied_port_and_does_not_wait_or_spawn(monkeypatch):
         openviking_module,
         "_start_local_openviking_server",
         lambda endpoint: (
-            openviking_module._LOCAL_SERVER_OCCUPIED,
+            openviking_module._autostart.LOCAL_SERVER_OCCUPIED,
             "Port 127.0.0.1:1934 is occupied by postgres (PID 99).",
         ),
     )
@@ -576,10 +598,18 @@ def test_runtime_does_not_autostart_when_local_server_reports_unhealthy(monkeypa
             return {"healthy": False}
 
     monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: True)
     monkeypatch.setattr(
         openviking_module,
-        "_start_local_openviking_server",
-        MagicMock(side_effect=AssertionError("responding unhealthy server should not auto-start another process")),
+        "_describe_local_port_listener",
+        lambda host, port: "broken-openviking (PID 7)",
+    )
+    systemctl_calls = _mock_systemctl(monkeypatch, unit_exists=True)
+    popen = MagicMock()
+    monkeypatch.setattr(
+        openviking_module.subprocess,
+        "Popen",
+        popen,
     )
 
     warnings = []
@@ -589,9 +619,117 @@ def test_runtime_does_not_autostart_when_local_server_reports_unhealthy(monkeypa
     assert provider._client is None
     assert warnings == [
         "Service at http://localhost:1934 responded but reported unhealthy OpenViking status. "
+        "The listener on localhost:1934 is broken-openviking (PID 7). "
         "OpenViking memory is temporarily unavailable; Hermes will retry on a later access "
         "or when the config changes."
     ]
+    popen.assert_not_called()
+    assert systemctl_calls == []
+
+
+def test_openviking_autostart_schema_exposes_conservative_modes():
+    schema = {
+        field["key"]: field
+        for field in OpenVikingMemoryProvider().get_config_schema()
+    }
+
+    assert schema["autostart"]["default"] == "auto"
+    assert schema["autostart"]["choices"] == ["auto", "never", "spawn"]
+
+
+def test_openviking_autostart_reads_profile_config_without_cross_profile_leaks(tmp_path, monkeypatch):
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+    profile_a.mkdir()
+    profile_b.mkdir()
+    (profile_a / "config.yaml").write_text(
+        "memory:\n  openviking:\n    autostart: never\n", encoding="utf-8"
+    )
+    (profile_b / "config.yaml").write_text(
+        "memory:\n  openviking:\n    autostart: spawn\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: False)
+    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
+    systemctl_calls = _mock_systemctl(monkeypatch, unit_exists=False)
+    popen = MagicMock(return_value=object())
+    monkeypatch.setattr(openviking_module.subprocess, "Popen", popen)
+
+    outcomes = []
+    for profile in (profile_a, profile_b, profile_a):
+        token = set_hermes_home_override(profile)
+        try:
+            outcomes.append(openviking_module._start_local_openviking_server("http://127.0.0.1:1934"))
+        finally:
+            reset_hermes_home_override(token)
+
+    assert [state for state, _message in outcomes] == [
+        openviking_module._autostart.LOCAL_SERVER_DISABLED,
+        openviking_module._autostart.LOCAL_SERVER_STARTED,
+        openviking_module._autostart.LOCAL_SERVER_DISABLED,
+    ]
+    assert "memory.openviking.autostart: never" in outcomes[0][1]
+    assert "memory.openviking.autostart: never" in outcomes[2][1]
+    assert popen.call_count == 1
+    assert [call[0] for call in systemctl_calls] == [
+        ["systemctl", "--user", "cat", "openviking.service"]
+    ]
+
+
+@pytest.mark.parametrize("mode", ["auto", "spawn"])
+def test_systemd_user_unit_prevents_bare_openviking_spawn(monkeypatch, mode):
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {"autostart": mode},
+    )
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: False)
+    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
+    systemctl_calls = _mock_systemctl(monkeypatch, unit_exists=True)
+    popen = MagicMock(side_effect=AssertionError("must not spawn beside a systemd user unit"))
+    monkeypatch.setattr(openviking_module.subprocess, "Popen", popen)
+
+    state, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+
+    popen.assert_not_called()
+    assert [call[0] for call in systemctl_calls] == (
+        [
+            ["systemctl", "--user", "cat", "openviking.service"],
+            ["systemctl", "--user", "start", "--no-block", "openviking.service"],
+        ]
+        if mode == "auto"
+        else [["systemctl", "--user", "cat", "openviking.service"]]
+    )
+    if mode == "auto":
+        assert state == openviking_module._autostart.LOCAL_SERVER_STARTED
+        assert "systemd user unit openviking.service" in message
+    else:
+        assert state == openviking_module._autostart.LOCAL_SERVER_MANAGED
+        assert "did not spawn a bare openviking-server process" in message
+
+
+def test_systemd_unit_file_blocks_spawn_when_user_manager_cannot_be_queried(tmp_path, monkeypatch):
+    unit_dir = tmp_path / "home" / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "openviking.service").write_text("[Service]\nExecStart=openviking-server\n", encoding="utf-8")
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {"autostart": "spawn"},
+    )
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: False)
+    monkeypatch.setattr(
+        openviking_module.subprocess,
+        "run",
+        lambda args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="user bus unavailable"),
+    )
+    popen = MagicMock(side_effect=AssertionError("unit file still owns the server when systemctl is unavailable"))
+    monkeypatch.setattr(openviking_module.subprocess, "Popen", popen)
+
+    state, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+
+    assert state == openviking_module._autostart.LOCAL_SERVER_MANAGED
+    assert "systemd user unit" in message
+    popen.assert_not_called()
 
 
 def test_handle_unreachable_endpoint_waits_long_enough_after_autostart(monkeypatch, capsys):
@@ -601,7 +739,7 @@ def test_handle_unreachable_endpoint_waits_long_enough_after_autostart(monkeypat
         openviking_module,
         "_start_local_openviking_server",
         lambda endpoint: (
-            openviking_module._LOCAL_SERVER_STARTED,
+            openviking_module._autostart.LOCAL_SERVER_STARTED,
             "Started openviking-server on 127.0.0.1:1934 in the background.",
         ),
     )
@@ -644,7 +782,7 @@ def test_initialize_autostarts_local_openviking_in_background_when_runtime_healt
         openviking_module,
         "_start_local_openviking_server",
         lambda endpoint: start_calls.append(endpoint)
-        or (openviking_module._LOCAL_SERVER_STARTED, "started"),
+        or (openviking_module._autostart.LOCAL_SERVER_STARTED, "started"),
     )
     monkeypatch.setattr(
         openviking_module,
