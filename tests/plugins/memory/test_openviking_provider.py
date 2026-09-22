@@ -564,6 +564,7 @@ def test_https_local_endpoint_is_not_runtime_autostart_eligible(monkeypatch):
 def test_runtime_does_not_autostart_when_local_server_reports_unhealthy(monkeypatch):
     _clear_openviking_env(monkeypatch)
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: False)
 
     class FakeVikingClient:
         def __init__(self, endpoint, api_key="", account="", user="", agent=""):
