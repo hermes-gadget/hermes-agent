@@ -19,6 +19,25 @@ def test_autonomous_silence_accepts_marker_with_own_line_note():
     assert is_autonomous_silence_response("[SILENT] No changes detected")
 
 
+def test_autonomous_silence_accepts_only_whole_response_fragments():
+    fragments = ("[SLC]", "[", "SLC]", "[SILEN", "[silent", " \n[SLC]\t\n")
+    for fragment in fragments:
+        assert is_autonomous_silence_response(fragment), fragment
+        # Interactive turns keep the exact marker contract.
+        assert not is_intentional_silence_response(fragment), fragment
+
+
+def test_autonomous_silence_delivers_real_content_around_brackets():
+    for response in (
+        "[ok] done",
+        "A [SLC] marker was logged.",
+        "Here is the result: [SLC]",
+        "[SLC] and then a full explanation follows.",
+        "SLC",
+    ):
+        assert not is_autonomous_silence_response(response), response
+
+
 def test_translated_sentinel_is_silence_in_every_form_the_english_one_is():
     """#110935: a lane that answers the cron instruction in its own language translates the
     sentinel; ``[静默]`` must suppress delivery exactly like ``[SILENT]`` (exact, own-line note,

@@ -6,6 +6,7 @@ not what should be persisted in conversation history.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any
 
@@ -27,6 +28,13 @@ LIVE_GATEWAY_SILENT_MARKERS = frozenset({
 _BRACKETED_SILENCE_MARKERS = tuple(
     sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("["))
 )
+
+# A damaged autonomous silence marker may survive as only its bracket wrapper
+# and a few letters (for example ``[SLC]`` or ``SILEN]``). Keep this rule
+# whole-response-only and require at least one bracket, so embedded text and
+# bracketless words do not match. This mirrors the gateway-local silence guard.
+_AUTONOMOUS_FRAGMENT_RE = re.compile(r"(?:\[[A-Z]{0,8}\]?|[A-Z]{0,8}\])")
+_AUTONOMOUS_FRAGMENT_MAX_LEN = 10
 
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn — the only
 # machinery kind the gateway produces; only these may vanish on a bare silence marker.
@@ -82,7 +90,9 @@ def is_autonomous_silence_response(response: Any) -> bool:
     interactive EXACT rule this also suppresses when a marker sits on its own
     first/last line or the bracketed sentinel opens the response (``[SILENT] No
     changes detected``).  A token buried mid-sentence is still delivered.
-    Shares :data:`LIVE_GATEWAY_SILENT_MARKERS` so the two sets cannot drift.
+    A marker-sized whole-response bracket fragment is also treated as silence
+    on these autonomous lanes. Shares :data:`LIVE_GATEWAY_SILENT_MARKERS` so
+    the canonical marker sets cannot drift.
     """
     stripped = response.strip() if isinstance(response, str) else ""
     if not stripped:
@@ -91,8 +101,17 @@ def is_autonomous_silence_response(response: Any) -> bool:
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
     # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
     # be suppressed in chat yet delivered by cron.
-    return stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
+    if stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
         is_intentional_silence_response(c) for c in (stripped, lines[0], lines[-1])
+    ):
+        return True
+
+    # Only tolerate a small, standalone bracket fragment in autonomous lanes.
+    # Trimming above accepts stray surrounding whitespace/newlines; the full
+    # match keeps brackets in the middle of real text fail-open.
+    return (
+        len(stripped) <= _AUTONOMOUS_FRAGMENT_MAX_LEN
+        and _AUTONOMOUS_FRAGMENT_RE.fullmatch(stripped.upper()) is not None
     )
 
 
