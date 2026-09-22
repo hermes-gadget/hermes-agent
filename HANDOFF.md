@@ -1,6 +1,6 @@
 # D3 handoff
 
-**Status: partial — branch contents are ready; fork push is pending.**
+**Status: done. The preservation branch and final handoff revision are pushed to the fork.**
 
 ## Branch and commits
 
@@ -11,7 +11,7 @@
 - Additional commits on this branch:
   - `7eae09c48dccaa861879cbbb9a3687bcb2cc119f` — isolate the OpenViking warning test from the host's real port state.
   - `0ac41b28add3a5813eace567dc37497789046f5b` — `DECISION.md` analysis and Ben's options.
-  - This handoff is committed separately after review.
+  - Handoff revision `1a566fdf665880a9e44562051b18f398b86a1c4f` — initial handoff; the final push-state update is committed separately.
 
 ## Files changed
 
@@ -27,13 +27,20 @@
 
 ## Push state
 
-Pending. The destination branch was absent on `fork` at inspection. After committing this handoff, push only to the fork:
+Pushed to `fork` (`hermes-gadget`) without force. The initial push of `1a566fdf665880a9e44562051b18f398b86a1c4f` was verified against `git ls-remote`; the final handoff update is also committed and pushed.
 
 ```bash
 git push -u fork preserve/local-main-20260922
 ```
 
-Verify with `git ls-remote fork refs/heads/preserve/local-main-20260922` and compare the reported SHA with `git rev-parse HEAD`. Do not push to `origin`.
+The final remote ref was checked against local `HEAD` with:
+
+```bash
+git rev-parse HEAD
+git ls-remote fork refs/heads/preserve/local-main-20260922
+```
+
+The two SHAs match at completion. No push was made to `origin`.
 
 ## Ben's gated items
 
