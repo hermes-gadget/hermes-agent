@@ -1,5 +1,6 @@
 """Tests for SSRF protection in url_safety module."""
 
+import os
 import socket
 from unittest.mock import patch
 
@@ -18,7 +19,6 @@ from tools.url_safety import (
     _resolved_http_connect_ips,
     _is_blocked_ip,
     _global_allow_private_urls,
-    _reset_allow_private_cache,
 )
 
 import ipaddress
@@ -272,13 +272,6 @@ class TestIsBlockedIp:
 class TestGlobalAllowPrivateUrls:
     """Tests for the security.allow_private_urls config toggle."""
 
-    @pytest.fixture(autouse=True)
-    def _reset_cache(self):
-        """Reset the module-level toggle cache before and after each test."""
-        _reset_allow_private_cache()
-        yield
-        _reset_allow_private_cache()
-
     def test_default_is_false(self, monkeypatch):
         """Toggle defaults to False when no env var or config is set."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
@@ -292,6 +285,42 @@ class TestGlobalAllowPrivateUrls:
         cfg = {"security": {"allow_private_urls": "false"}}
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is False
+
+    def test_config_mtime_change_reloads_browser_toggle(self, tmp_path, monkeypatch):
+        """A runtime config edit must change the effective URL policy."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        for var in (
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "browser:\n  allow_private_urls: false\n", encoding="utf-8"
+        )
+
+        with _resolves_to("192.168.1.1"):
+            assert is_safe_url("http://private-route.test/") is False
+
+            before = config_path.stat()
+            config_path.write_text(
+                "browser:\n  allow_private_urls: true\n", encoding="utf-8"
+            )
+            updated = config_path.stat()
+            os.utime(
+                config_path,
+                ns=(
+                    before.st_atime_ns,
+                    max(updated.st_mtime_ns, before.st_mtime_ns + 1_000_000),
+                ),
+            )
+
+            assert is_safe_url("http://private-route.test/") is True
 
 
     @pytest.mark.parametrize(
@@ -340,12 +369,6 @@ class TestGlobalAllowPrivateUrls:
 
 class TestAllowPrivateUrlsIntegration:
     """Integration tests: is_safe_url respects the global toggle."""
-
-    @pytest.fixture(autouse=True)
-    def _reset_cache(self):
-        _reset_allow_private_cache()
-        yield
-        _reset_allow_private_cache()
 
     @pytest.mark.parametrize("ip, url", [
         ("192.168.1.1", "http://router.local"),

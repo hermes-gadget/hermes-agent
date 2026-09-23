@@ -10,6 +10,7 @@ can opt out for cloud mode via ``browser.allow_private_urls: true``.
 """
 
 import json
+import os
 
 import pytest
 
@@ -296,14 +297,6 @@ class TestPostRedirectSsrf:
 
 
 class TestAllowPrivateUrlsConfig:
-    @pytest.fixture(autouse=True)
-    def _reset_cache(self):
-        browser_tool._allow_private_urls_resolved = False
-        browser_tool._cached_allow_private_urls = None
-        yield
-        browser_tool._allow_private_urls_resolved = False
-        browser_tool._cached_allow_private_urls = None
-
     def test_browser_config_string_false_stays_disabled(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
@@ -311,6 +304,42 @@ class TestAllowPrivateUrlsConfig:
         )
 
         assert browser_tool._allow_private_urls() is False
+
+    def test_browser_exec_preflight_reloads_config_after_mtime_change(
+        self, tmp_path, monkeypatch
+    ):
+        """browser_exec must observe a runtime edit to browser.allow_private_urls."""
+        from tools import browser_use_cli
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "browser:\n  allow_private_urls: false\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda _url: False)
+        monkeypatch.setattr(browser_tool, "check_website_access", lambda _url: None)
+        monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: None)
+        code = "new_tab('http://192.168.1.1/')"
+
+        blocked = json.loads(browser_use_cli.browser_exec(code))
+        assert "private or internal address" in blocked["error"]
+
+        before = config_path.stat()
+        config_path.write_text(
+            "browser:\n  allow_private_urls: true\n", encoding="utf-8"
+        )
+        updated = config_path.stat()
+        os.utime(
+            config_path,
+            ns=(
+                before.st_atime_ns,
+                max(updated.st_mtime_ns, before.st_mtime_ns + 1_000_000),
+            ),
+        )
+
+        allowed_by_policy = json.loads(browser_use_cli.browser_exec(code))
+        assert "browser-use CLI not found" in allowed_by_policy["error"]
 
     @pytest.mark.parametrize(
         "profile_order",

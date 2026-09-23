@@ -985,15 +985,9 @@ def allow_private_urls(monkeypatch):
     """Opt the SSRF guard into private/loopback targets for local fixtures.
 
     Mirrors a user setting HERMES_ALLOW_PRIVATE_URLS on a private network.
-    Resets the url_safety process-lifetime cache on both sides so the
-    override neither leaks in nor out of the test.
     """
-    from tools import url_safety
-
     monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
-    url_safety._reset_allow_private_cache()
     yield
-    url_safety._reset_allow_private_cache()
 
 
 def test_attach_url_rejects_non_http_scheme(worker_env):
@@ -1014,15 +1008,10 @@ def test_attach_url_rejects_non_http_scheme(worker_env):
 def default_url_guard(monkeypatch):
     """Force the SSRF guard to its secure default for this test.
 
-    Clears HERMES_ALLOW_PRIVATE_URLS and resets url_safety's process-lifetime
-    cache on both sides so a prior test's opt-in can't leak in.
+    Clears HERMES_ALLOW_PRIVATE_URLS so a prior test's opt-in can't leak in.
     """
-    from tools import url_safety
-
     monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
-    url_safety._reset_allow_private_cache()
     yield
-    url_safety._reset_allow_private_cache()
 
 
 def _assert_attach_url_blocked(worker_env, url):

@@ -34,7 +34,6 @@ import re
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
-from hermes_constants import get_hermes_home_override
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -212,9 +211,6 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
 # ---------------------------------------------------------------------------
-# Cached after first read so we don't hit the filesystem on every URL check.
-_allow_private_resolved = False
-_cached_allow_private: bool = False
 
 
 def _global_allow_private_urls() -> bool:
@@ -225,24 +221,12 @@ def _global_allow_private_urls() -> bool:
     2. ``security.allow_private_urls`` in config.yaml
     3. ``browser.allow_private_urls`` in config.yaml  (legacy / backward compat)
 
-    The single-profile result is cached for the process lifetime. Multiplexed
-    profile turns bypass that process-global cache because their config root is
-    context-local; ``read_raw_config()`` already provides path/mtime caching.
+    Resolve the setting each time so environment and config edits take effect
+    during a long-lived process. ``read_raw_config()`` caches parsed config by
+    path, mtime, and size, so unchanged config does not incur repeated YAML
+    parsing; its context-local path also keeps multiplexed profiles isolated.
     """
-    global _allow_private_resolved, _cached_allow_private
-
-    # A multiplex gateway serves several independently configured profiles in
-    # one process. Reusing the first profile's opt-out here would let it disable
-    # private-network blocking for every later profile in that process.
-    if get_hermes_home_override() is not None:
-        return _resolve_allow_private_urls()
-
-    if _allow_private_resolved:
-        return _cached_allow_private
-
-    _allow_private_resolved = True
-    _cached_allow_private = _resolve_allow_private_urls()
-    return _cached_allow_private
+    return _resolve_allow_private_urls()
 
 
 def _resolve_allow_private_urls() -> bool:
@@ -277,13 +261,6 @@ def _resolve_allow_private_urls() -> bool:
         pass
 
     return False
-
-
-def _reset_allow_private_cache() -> None:
-    """Reset the cached toggle — only for tests."""
-    global _allow_private_resolved, _cached_allow_private
-    _allow_private_resolved = False
-    _cached_allow_private = False
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:

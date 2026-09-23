@@ -745,8 +745,6 @@ _cached_cloud_providers: Dict[
     tuple[str, tuple[int, int]], Optional[CloudBrowserProvider]
 ] = {}
 _cloud_provider_cache_lock = threading.RLock()
-_allow_private_urls_resolved = False
-_cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
 
@@ -2071,24 +2069,12 @@ def _last_session_key(task_id: str) -> str:
 def _allow_private_urls() -> bool:
     """Return whether the browser is allowed to navigate to private/internal addresses.
 
-    Reads ``config["browser"]["allow_private_urls"]``. Single-profile calls
-    cache the result for the process lifetime; multiplexed profile turns resolve
-    their context-local config on each call. Defaults to ``False`` (SSRF
-    protection active).
+    Reads ``config["browser"]["allow_private_urls"]`` on each call. The config
+    reader caches parsed YAML by path, mtime, and size, so edits take effect
+    during a long-lived session without reparsing unchanged files. Defaults to
+    ``False`` (SSRF protection active).
     """
-    global _cached_allow_private_urls, _allow_private_urls_resolved
-
-    # The profile multiplexer scopes config with a ContextVar while sharing
-    # this module. Never reuse another profile's private-network opt-out.
-    if get_hermes_home_override() is not None:
-        return _resolve_allow_private_urls()
-
-    if _allow_private_urls_resolved:
-        return _cached_allow_private_urls
-
-    _allow_private_urls_resolved = True
-    _cached_allow_private_urls = _resolve_allow_private_urls()
-    return _cached_allow_private_urls
+    return _resolve_allow_private_urls()
 
 
 def _resolve_allow_private_urls() -> bool:
