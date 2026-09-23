@@ -291,9 +291,10 @@ def _build_systemd_scope_argv(
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation.
 
     The resulting cgroup gets its own memory accounting so an OOM in the
-    worker does not kill the gateway cgroup (#70716).  ``--collect`` makes
-    the transient scope self-clean after exit; ``--unit`` gives it a
-    recognisable name for ``systemctl --user status`` / journalctl.
+    worker does not kill the gateway cgroup (#70716). Inactive scopes are
+    collected automatically, while failed scopes remain available long
+    enough to inspect their result; the OOM path resets that failure after
+    recording it. ``--unit`` gives the transient scope a recognisable name.
     """
     import shutil
 
@@ -311,13 +312,14 @@ def _build_systemd_scope_argv(
         "--quiet",
         "--unit",
         unit_name,
-        "--collect",
         "--property",
         "MemoryAccounting=yes",
         "--property",
         f"MemoryMax={memory_max}",
         "--property",
         "OOMPolicy=kill",
+        "--property",
+        "CollectMode=inactive",
         "--",
         *shell_argv,
     ]
@@ -399,6 +401,37 @@ def _systemd_scope_was_oom_killed(unit_name: str) -> bool:
     except Exception as exc:
         logger.debug("Could not read systemd result for %s: %s", unit_name, exc)
         return False
+
+
+def _reset_failed_systemd_scope(unit_name: str) -> None:
+    """Release retained failure state after reading an OOM result."""
+    if (
+        not _IS_LINUX
+        or not unit_name.startswith("hermes-worker-")
+        or not unit_name.endswith(".scope")
+    ):
+        return
+
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return
+    try:
+        result = subprocess.run(
+            [binary, "--user", "reset-failed", unit_name],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode != 0:
+            logger.debug(
+                "Could not reset completed OOM scope %s: %s",
+                unit_name,
+                (result.stderr or "").strip(),
+            )
+    except Exception as exc:
+        logger.debug("Could not reset completed OOM scope %s: %s", unit_name, exc)
 
 
 def format_uptime_short(seconds: int) -> str:
@@ -598,6 +631,7 @@ class ProcessRegistry:
             if len(session.output_buffer) > session.max_output_chars:
                 session.output_buffer = session.output_buffer[-session.max_output_chars:]
         self._emit_output(session, appended)
+        _reset_failed_systemd_scope(session.systemd_unit)
         return appended
 
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:

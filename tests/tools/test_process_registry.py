@@ -343,9 +343,14 @@ def test_reader_loop_reports_only_confirmed_worker_cgroup_oom(
     if has_worker_scope:
         session.systemd_unit = "hermes-worker-proc_reader_oom.scope"
     queried = []
+    reset = []
     monkeypatch.setattr(
         "tools.process_registry._systemd_scope_was_oom_killed",
         lambda unit: queried.append(unit) or systemd_reports_oom,
+    )
+    monkeypatch.setattr(
+        "tools.process_registry._reset_failed_systemd_scope",
+        lambda unit: reset.append(unit),
     )
     monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
     monkeypatch.setattr(registry, "_emit_output", lambda _s, _c: None)
@@ -355,6 +360,7 @@ def test_reader_loop_reports_only_confirmed_worker_cgroup_oom(
 
     notice = "Worker was OOM-killed by its systemd cgroup"
     assert (notice in session.output_buffer) is expect_notice
+    assert reset == ([session.systemd_unit] if expect_notice else [])
     if expect_notice:
         assert session.output_buffer.startswith("last output\n")
         assert session.exit_code == -signal.SIGKILL
@@ -390,6 +396,28 @@ def test_systemd_scope_oom_query_requires_systemd_oom_result(monkeypatch):
         assert process_registry_module._systemd_scope_was_oom_killed(
             "hermes-worker-proc_kill.scope"
         ) is False
+
+
+def test_reset_failed_systemd_scope_only_resets_hermes_worker_units(monkeypatch):
+    import tools.process_registry as process_registry_module
+
+    monkeypatch.setattr(process_registry_module, "_IS_LINUX", True)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+
+    with patch("subprocess.run", return_value=MagicMock(returncode=0)) as run:
+        process_registry_module._reset_failed_systemd_scope(
+            "hermes-worker-proc_oom.scope"
+        )
+    assert run.call_args.args[0] == [
+        "/usr/bin/systemctl",
+        "--user",
+        "reset-failed",
+        "hermes-worker-proc_oom.scope",
+    ]
+
+    with patch("subprocess.run") as run:
+        process_registry_module._reset_failed_systemd_scope("other-worker.scope")
+    run.assert_not_called()
 
 
 # =========================================================================
@@ -1854,6 +1882,7 @@ class TestSystemdCgroupIsolation:
             "systemd-run argv must include --quiet (#70716 gap #3)"
         )
         assert "--unit" in argv
+        assert "--collect" not in argv
         unit_idx = argv.index("--unit")
         assert argv[unit_idx + 1].startswith("hermes-worker-"), argv
         assert argv[unit_idx + 1] == f"hermes-worker-{session.id}", (
@@ -1866,6 +1895,7 @@ class TestSystemdCgroupIsolation:
         ]
         assert "MemoryAccounting=yes" in properties
         assert "OOMPolicy=kill" in properties
+        assert "CollectMode=inactive" in properties
         memory_max = next(
             value for value in properties if value.startswith("MemoryMax=")
         )
