@@ -118,10 +118,16 @@ class TestDetectDangerousRm:
         linked_temp = tmp_path / "linked-temp"
         linked_temp.symlink_to(real_temp, target_is_directory=True)
         basename = "hermes-verify-example.py"
+        linked_command = f"rm -f {linked_temp / basename}"
+        canonical_command = f"rm -f {real_temp / basename}"
 
         with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
-            assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
-            assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
+            # The exemption itself is the property under test: keep the
+            # linked spelling as a negative control without relying on the
+            # dangerous-command patterns for the pytest basetemp location.
+            assert approval_module._is_verification_artifact_cleanup(linked_command) is False
+            assert approval_module._is_verification_artifact_cleanup(canonical_command) is True
+            assert detect_dangerous_command(canonical_command) == (
                 False,
                 None,
                 None,
