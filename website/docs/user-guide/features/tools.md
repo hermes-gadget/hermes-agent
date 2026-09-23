@@ -60,6 +60,15 @@ A few tool behaviors are worth knowing when you read agent transcripts:
 - **Signal deaths are explained.** When a terminal command is killed by a signal, the result carries a human-readable note instead of a bare numeric code — e.g. exit `-9`/`137` becomes "terminated by signal 9: SIGKILL — often the kernel OOM killer on memory exhaustion, or an explicit kill -9", and segfaults, aborts, SIGTERM, broken pipes, and CPU/file-size limits are labeled the same way. Negative codes (subprocess semantics) are stated definitively; the shell's `128+signum` convention is hedged with "usually" since an application can legitimately exit with those codes.
 - **UTF-16 text files are transcoded, not refused.** `read_file` detects UTF-16 (BOM or byte-pattern heuristic, either endianness — common for Windows Notepad files and PowerShell `>` redirects) and transcodes it to UTF-8 for display instead of flagging the file as binary. The result includes a hint disclosing the conversion; edits via `patch`/`write_file` re-encode as UTF-8. Files over 10 MB and genuinely binary files still get the binary-file refusal.
 
+### Large local background jobs on systemd
+
+Gateway-launched `hermes-worker-*.scope` workers are capped at 4 GiB. For a job that needs more memory, launch it directly in its own transient user scope from a shell outside the Hermes worker scope, and set a limit that fits the host and its parent slice:
+
+```bash
+systemd-run --user --scope --wait --unit=large-job \
+  --property=MemoryMax=8G -- python3 /path/to/job.py
+```
+
 ## Terminal Backends
 
 The terminal tool can execute commands in different environments:

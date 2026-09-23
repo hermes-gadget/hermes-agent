@@ -313,6 +313,85 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
     assert moved == ["proc_reader_live"]
 
 
+@pytest.mark.parametrize(
+    ("has_worker_scope", "systemd_reports_oom", "expect_notice"),
+    [
+        (True, True, True),
+        (True, False, False),
+        (False, True, False),
+    ],
+)
+def test_reader_loop_reports_only_confirmed_worker_cgroup_oom(
+    registry, monkeypatch, has_worker_scope, systemd_reports_oom, expect_notice
+):
+    class _FakeBuffer:
+        def read1(self, _n):
+            return b""
+
+    class _FakeStdout:
+        buffer = _FakeBuffer()
+
+    class _FakeProcess:
+        stdout = _FakeStdout()
+        returncode = -signal.SIGKILL
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    session = _make_session(sid="proc_reader_oom", output="last output\n")
+    session.process = _FakeProcess()
+    if has_worker_scope:
+        session.systemd_unit = "hermes-worker-proc_reader_oom.scope"
+    queried = []
+    monkeypatch.setattr(
+        "tools.process_registry._systemd_scope_was_oom_killed",
+        lambda unit: queried.append(unit) or systemd_reports_oom,
+    )
+    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_emit_output", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
+
+    registry._reader_loop(session)
+
+    notice = "Worker was OOM-killed by its systemd cgroup"
+    assert (notice in session.output_buffer) is expect_notice
+    if expect_notice:
+        assert session.output_buffer.startswith("last output\n")
+        assert session.exit_code == -signal.SIGKILL
+    assert queried == ([session.systemd_unit] if has_worker_scope else [])
+
+
+def test_systemd_scope_oom_query_requires_systemd_oom_result(monkeypatch):
+    import tools.process_registry as process_registry_module
+
+    monkeypatch.setattr(process_registry_module, "_IS_LINUX", True)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+
+    with patch(
+        "subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="oom-kill\n"),
+    ) as run:
+        assert process_registry_module._systemd_scope_was_oom_killed(
+            "hermes-worker-proc_oom.scope"
+        ) is True
+    assert run.call_args.args[0] == [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "hermes-worker-proc_oom.scope",
+        "--property=Result",
+        "--value",
+    ]
+
+    with patch(
+        "subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="signal\n"),
+    ):
+        assert process_registry_module._systemd_scope_was_oom_killed(
+            "hermes-worker-proc_kill.scope"
+        ) is False
+
+
 # =========================================================================
 # Incremental UTF-8 decoding across chunk boundaries
 # (ported from openclaw/openclaw#112325)

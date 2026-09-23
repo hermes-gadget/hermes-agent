@@ -366,6 +366,41 @@ def _stop_systemd_unit(unit_name: str) -> bool:
         return False
 
 
+def _systemd_scope_was_oom_killed(unit_name: str) -> bool:
+    """Return True only when systemd reports a Hermes worker scope OOM.
+
+    A SIGKILL/exit -9 can also come from an explicit kill, so the exit status
+    alone is not enough to label it an OOM.  Query the transient unit result
+    and require systemd's specific ``oom-kill`` result.
+    """
+    if (
+        not _IS_LINUX
+        or not unit_name.startswith("hermes-worker-")
+        or not unit_name.endswith(".scope")
+    ):
+        return False
+
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return False
+    try:
+        result = subprocess.run(
+            [binary, "--user", "show", unit_name, "--property=Result", "--value"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return (
+            result.returncode == 0
+            and (result.stdout or "").strip().lower() == "oom-kill"
+        )
+    except Exception as exc:
+        logger.debug("Could not read systemd result for %s: %s", unit_name, exc)
+        return False
+
+
 def format_uptime_short(seconds: int) -> str:
     s = max(0, int(seconds))
     if s < 60:
@@ -403,6 +438,7 @@ class ProcessSession:
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run (#70716)
+    _systemd_oom_notice_added: bool = field(default=False, repr=False)
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -455,6 +491,10 @@ class ProcessRegistry:
         "no job control in this shell",
         "cannot set terminal process group",
         "tcsetattr: Inappropriate ioctl for device",
+    )
+    _SYSTEMD_OOM_NOTICE = (
+        "[Hermes] Worker was OOM-killed by its systemd cgroup "
+        "after exceeding the memory limit.\n"
     )
 
     def __init__(self):
@@ -531,6 +571,34 @@ class ProcessRegistry:
             sink(session, chunk)
         except Exception:
             pass
+
+    def _append_systemd_oom_notice(
+        self, session: ProcessSession, exit_code: Optional[int]
+    ) -> str:
+        """Append and stream an OOM notice only with explicit systemd proof."""
+        if (
+            exit_code != -signal.SIGKILL
+            or not session.systemd_unit
+            or session._systemd_oom_notice_added
+            or not _systemd_scope_was_oom_killed(session.systemd_unit)
+        ):
+            return ""
+
+        with session._lock:
+            if session._systemd_oom_notice_added:
+                return ""
+            session._systemd_oom_notice_added = True
+            separator = (
+                ""
+                if not session.output_buffer or session.output_buffer.endswith("\n")
+                else "\n"
+            )
+            appended = separator + self._SYSTEMD_OOM_NOTICE
+            session.output_buffer += appended
+            if len(session.output_buffer) > session.max_output_chars:
+                session.output_buffer = session.output_buffer[-session.max_output_chars:]
+        self._emit_output(session, appended)
+        return appended
 
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan new output for watch patterns and queue notifications.
@@ -1520,6 +1588,7 @@ class ProcessRegistry:
             if session.completion_reason != "killed":
                 session.exit_code = session.process.returncode
                 session.completion_reason = "exited"
+                self._append_systemd_oom_notice(session, session.exit_code)
             self._move_to_finished(session)
 
     def _env_poller_loop(
@@ -1629,6 +1698,7 @@ class ProcessRegistry:
         if session.completion_reason != "killed":
             session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
             session.completion_reason = "exited"
+            self._append_systemd_oom_notice(session, session.exit_code)
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
@@ -2116,6 +2186,8 @@ class ProcessRegistry:
             if session.completion_reason != "killed":
                 session.exit_code = rc
                 session.completion_reason = "exited"
+        if session.completion_reason == "exited":
+            self._append_systemd_oom_notice(session, rc)
         logger.info(
             "Reconciled session %s: direct child exited with code %s but reader "
             "was still blocked (orphaned pipe). Flipped to exited.",
