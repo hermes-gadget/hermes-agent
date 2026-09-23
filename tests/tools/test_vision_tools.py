@@ -702,6 +702,49 @@ class TestErrorClassification:
         assert "rejected the image" in result["analysis"].lower()
         assert "smaller" in result["analysis"].lower()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("message", "status_code", "response_status", "expected_reason"),
+        [
+            ("rate limit reached", 429, None, "rate_limit"),
+            ("upstream unavailable", None, 503, "provider_5xx"),
+            ("daily quota exceeded", None, None, "quota"),
+            ("invalid image format", 400, None, None),
+        ],
+    )
+    async def test_provider_degradation_is_marked_in_result(
+        self, tmp_path, message, status_code, response_status, expected_reason
+    ):
+        img = tmp_path / "test.png"
+        img.write_bytes(VALID_PNG)
+        api_error = Exception(message)
+        if status_code is not None:
+            api_error.status_code = status_code
+        if response_status is not None:
+            api_error.response = MagicMock(status_code=response_status)
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=api_error,
+            ),
+        ):
+            result = json.loads(
+                await vision_analyze_tool(str(img), "describe", "test/model")
+            )
+
+        assert result["success"] is False
+        if expected_reason:
+            assert result["degraded"] is True
+            assert result["degraded_reason"] == expected_reason
+        else:
+            assert "degraded" not in result
+
 
 class TestVisionRegistration:
     def test_vision_analyze_registered_with_schema(self):

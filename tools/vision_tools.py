@@ -36,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -733,6 +734,36 @@ def _is_image_size_error(error: Exception) -> bool:
     ))
 
 
+def _vision_degraded_reason(error: Exception) -> Optional[str]:
+    """Classify provider quota, rate-limit, and server failures for tool output."""
+    response = getattr(error, "response", None)
+    status = getattr(error, "status_code", None)
+    if status is None:
+        status = getattr(response, "status_code", None)
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+
+    if status == 429:
+        return "rate_limit"
+    if status is not None and 500 <= status <= 599:
+        return "provider_5xx"
+
+    message = str(error).lower()
+    if re.search(r"\b429\b", message):
+        return "rate_limit"
+    match = re.search(r"\b(5\d\d)\b", message)
+    if match:
+        return "provider_5xx"
+    if any(marker in message for marker in (
+        "quota", "resource exhausted", "tokens per day", "daily limit",
+        "weekly limit",
+    )):
+        return "quota"
+    return None
+
+
 def _image_exceeds_dimension(image_path: Path, max_dimension: int) -> bool:
     """True if the image's longest side exceeds ``max_dimension`` px.
 
@@ -1421,6 +1452,8 @@ async def vision_analyze_tool(
                  "success": bool,
                  "analysis": str (defaults to error message if None)
              }
+             Provider quota, rate-limit, and 5xx failures also include
+             ``degraded: true`` and a ``degraded_reason`` field.
     
     Raises:
         Exception: If download fails, analysis fails, or API key is not set
@@ -1698,6 +1731,10 @@ async def vision_analyze_tool(
             "error": error_msg,
             "analysis": analysis,
         }
+        degraded_reason = _vision_degraded_reason(e)
+        if degraded_reason:
+            result["degraded"] = True
+            result["degraded_reason"] = degraded_reason
         
         debug_call_data["error"] = error_msg
         _debug.log_call("vision_analyze_tool", debug_call_data)
