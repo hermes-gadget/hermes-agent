@@ -109,6 +109,10 @@ class TestDetectDangerousRm:
                 )
 
     def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
+        # Pytest's basetemp may itself be reached through a scratch-TMPDIR
+        # symlink. Keep this fixture's "canonical" target canonical too, so
+        # the assertions isolate the temp-dir symlink under test.
+        tmp_path = tmp_path.resolve()
         real_temp = tmp_path / "real-temp"
         real_temp.mkdir()
         linked_temp = tmp_path / "linked-temp"
