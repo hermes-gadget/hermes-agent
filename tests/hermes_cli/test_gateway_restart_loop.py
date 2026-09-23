@@ -833,6 +833,43 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 0
         assert calls == [command]
 
+    def test_read_only_gw_docs_python_heredoc_passes_through(
+        self, monkeypatch, tmp_path
+    ):
+        """The terminal guard must allow read-only data inspection (#226)."""
+        import tools.terminal_tool as tt
+
+        calls = []
+        data_file = tmp_path / "gw_docs.json"
+        data_file.write_text('{"docs": ["gateway restart notes"]}', encoding="utf-8")
+
+        class _FakeEnv:
+            env = {}
+            cwd = str(tmp_path)
+
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                return {"output": "1", "returncode": 0}
+
+        self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
+        monkeypatch.setattr(
+            tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True}
+        )
+        command = (
+            f"[ -f {data_file} ]\n"
+            "python3 - <<'PY'\n"
+            "import json\n"
+            f"with open({str(data_file)!r}) as handle:\n"
+            "    docs = json.load(handle)\n"
+            "print(len(docs['docs']))\n"
+            "PY"
+        )
+
+        result = json.loads(tt.terminal_tool(command=command))
+
+        assert result["exit_code"] == 0
+        assert calls == [command]
+
     def test_safe_systemctl_commands_pass_through(self, monkeypatch):
         """Non-hermes systemctl commands must not be blocked by this guard."""
         import tools.terminal_tool as tt
@@ -987,6 +1024,87 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
             is True
         )
+
+    def test_large_data_path_in_python_heredoc_is_not_walked(
+        self, tmp_path, monkeypatch
+    ):
+        """A Python data read must not turn its JSON operand into a script.
+
+        The shell tokenizer sees the path inside ``Path(...).read_text()`` as
+        a command token. Walking that non-executable, oversized JSON file used
+        to exhaust the referenced-script byte limit and fail closed.
+        """
+        import cron.lifecycle_guard as lifecycle_guard
+        from cron.lifecycle_guard import (
+            _MAX_REFERENCED_SCRIPT_BYTES,
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        data_file = tmp_path / "large-docs.json"
+        data_file.write_text(
+            "{\"docs\":\"" + "x" * (_MAX_REFERENCED_SCRIPT_BYTES + 64) + "\"}",
+            encoding="utf-8",
+        )
+        command = (
+            "python3 - <<'PY'\n"
+            "from pathlib import Path\n"
+            f"print(Path({str(data_file)!r}).read_text()[:20])\n"
+            "PY"
+        )
+
+        read_paths = []
+        original_read = lifecycle_guard._read_referenced_script
+
+        def track_reads(path):
+            read_paths.append(Path(path))
+            return original_read(path)
+
+        monkeypatch.setattr(lifecycle_guard, "_read_referenced_script", track_reads)
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+        assert data_file not in read_paths
+
+    def test_read_only_gw_docs_recon_does_not_walk_data_file(
+        self, tmp_path, monkeypatch
+    ):
+        """The #226 ``-f`` plus Python ``open()`` recon shape is read-only.
+
+        Heredoc code and its data operands are not shell scripts; the guard
+        must leave the read-only command alone without opening the JSON file
+        as candidate script content.
+        """
+        import cron.lifecycle_guard as lifecycle_guard
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        data_file = tmp_path / "gw_docs.json"
+        data_file.write_text('{"docs": ["gateway restart notes"]}', encoding="utf-8")
+        command = (
+            f"[ -f {data_file} ]\n"
+            "python3 - <<'PY'\n"
+            "import json\n"
+            f"with open({str(data_file)!r}) as handle:\n"
+            "    docs = json.load(handle)\n"
+            "print(len(docs['docs']))\n"
+            "PY"
+        )
+
+        read_paths = []
+        original_read = lifecycle_guard._read_referenced_script
+
+        def track_reads(path):
+            read_paths.append(Path(path))
+            return original_read(path)
+
+        monkeypatch.setattr(lifecycle_guard, "_read_referenced_script", track_reads)
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+        assert data_file not in read_paths
 
     def test_clean_script_without_lifecycle_command_not_blocked(self, tmp_path):
         """Sanity: the change must not false-block innocent scripts."""

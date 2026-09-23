@@ -292,6 +292,25 @@ _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
+# A path token can appear by itself in non-shell code after the command text
+# is tokenized as shell. When the local file is absent, these common data
+# formats are not candidates for a remote executable-script read. Existing
+# executable files with these suffixes are still considered below.
+_DATA_FILE_SUFFIXES = frozenset(
+    {
+        ".csv",
+        ".json",
+        ".jsonl",
+        ".log",
+        ".md",
+        ".toml",
+        ".tsv",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
 
 
 # Directory names that sit directly under a `Library` path component and
@@ -765,6 +784,30 @@ def _iter_option_values(
             yield token[len(prefix):]
 
 
+def _is_direct_executable_script_reference(path: Path) -> bool:
+    """Whether a bare data-shaped path token can actually be a script.
+
+    Explicit references through a shell, ``source`` or ``.`` are handled
+    separately and always scanned: an interpreter can run a non-executable
+    file. A bare path token is different. The recursive shell tokenizer can
+    also produce one from Python/data text (for example
+    ``Path('/tmp/data.json')`` in a quoted Python heredoc), where walking its
+    contents creates false positives and can exhaust the scan limit on a
+    large data file. Only suppress common data-file suffixes here; preserving
+    the existing walk for extensionless and script-shaped paths keeps the
+    fail-closed behavior for referenced scripts. A data-suffixed local file
+    is still scanned when it is executable, and an absent data path is never
+    sent to a remote script reader.
+    """
+    if path.suffix.lower() not in _DATA_FILE_SUFFIXES:
+        return True
+    try:
+        metadata = path.stat()
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISREG(metadata.st_mode) and bool(metadata.st_mode & 0o111)
+
+
 def _references_at(
     segment: list[str], index: int, cwd: Optional[str]
 ) -> Iterator[Path]:
@@ -815,7 +858,9 @@ def _references_at(
     if executable.strip("/"):
         if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
             resolved = _resolve_terminal_script_path(executable, cwd)
-            if resolved is not None:
+            if resolved is not None and _is_direct_executable_script_reference(
+                resolved
+            ):
                 yield resolved
 
 
