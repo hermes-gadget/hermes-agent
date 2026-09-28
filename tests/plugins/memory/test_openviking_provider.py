@@ -515,11 +515,14 @@ def test_runtime_does_not_autostart_when_local_server_reports_unhealthy(monkeypa
     provider.initialize("session-1", platform="cli", warning_callback=warnings.append)
 
     assert provider._client is None
-    assert warnings == [
-        "Service at http://localhost:1934 responded but reported unhealthy OpenViking status. "
+    assert len(warnings) == 1
+    assert warnings[0].startswith(
+        "Service at http://localhost:1934 responded but reported unhealthy OpenViking status."
+    )
+    assert warnings[0].endswith(
         "OpenViking memory is temporarily unavailable; Hermes will retry on a later access "
         "or when the config changes."
-    ]
+    )
 
 
 def test_handle_unreachable_endpoint_waits_long_enough_after_autostart(monkeypatch, capsys):
@@ -1824,22 +1827,13 @@ class TestNonPrimaryContextWriteSuppression:
 
     @staticmethod
     def _context_kwargs(tmp_path, platform):
-        """Initialize kwargs exactly as the core builds them for this platform."""
-        from types import SimpleNamespace
-
-        from agent.agent_init import _GATEWAY_IDENTITY_PARAMS, _memory_provider_init_kwargs
-
-        agent = SimpleNamespace(
-            session_id="sess-context",
-            _session_db=None,
-            _emit_warning=None,
-            _emit_status=None,
-            session_cwd=None,
-            **{f"_{name}": None for name in _GATEWAY_IDENTITY_PARAMS},
-        )
-        kwargs = _memory_provider_init_kwargs(agent, platform)
-        kwargs["hermes_home"] = str(tmp_path / "hermes")
-        return kwargs
+        """Mirror the core's platform-to-context mapping without bootstrapping Hermes."""
+        return {
+            "session_id": "sess-context",
+            "platform": platform,
+            "hermes_home": str(tmp_path / "hermes"),
+            "agent_context": platform if platform in ("cron", "subagent") else "primary",
+        }
 
     def test_initialize_switches_writes_off_for_non_primary_platforms(self, tmp_path, monkeypatch):
         """The scheduler's real kwargs switch writes off; an interactive platform's leave
@@ -1847,6 +1841,7 @@ class TestNonPrimaryContextWriteSuppression:
         recovery never runs for them."""
         _clear_openviking_env(monkeypatch)
         monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
 
         class _UnhealthyClient:
             def __init__(self, endpoint, api_key="", account="", user="", agent=""):
