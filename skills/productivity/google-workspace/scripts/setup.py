@@ -58,10 +58,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
 ]
 
-# OAuth redirect for "out of band" manual code copy flow.
-# Google deprecated OOB, so we use a localhost redirect and tell the user to
-# copy the code from the browser's URL bar (or the page body).
-REDIRECT_URI = "http://localhost:1"
+# OAuth redirect for the manual code-copy flow. Google deprecated OOB, so we use
+# a high, browser-safe loopback port and tell the user to copy the code from the
+# browser's URL bar (or the page body). No local callback listener is required.
+REDIRECT_URI = "http://localhost:8765"
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:

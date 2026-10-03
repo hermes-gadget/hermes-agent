@@ -576,13 +576,22 @@ def _configure_http_auth(
     return True
 
 
-def _choose_tools(name: str, tools: List[Tuple[str, str]], server_config: Dict[str, Any]) -> Optional[int]:
-    """Ask enable-all / select / cancel; returns the enabled-tool count or None when cancelled."""
+def _choose_tools(
+    name: str,
+    tools: List[Tuple[str, str]],
+    server_config: Dict[str, Any],
+    *,
+    all_tools: bool = False,
+) -> Optional[int]:
+    """Ask enable-all / select / cancel, unless ``all_tools`` is set for scripts."""
     print()
     _success(f"Connected! Found {len(tools)} tool(s) from '{name}':")
     print()
     _print_tools(tools, 40, 60)
     print()
+    if all_tools:
+        _info(f"Enabling all {len(tools)} tools (--all-tools).")
+        return len(tools)
     try:
         choice = input(
             color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
@@ -698,7 +707,12 @@ def cmd_mcp_add(args):
                 _success(f"Saved '{name}' to config")
         return
 
-    tool_count = _choose_tools(name, tools, server_config)
+    tool_count = _choose_tools(
+        name,
+        tools,
+        server_config,
+        all_tools=bool(getattr(args, "all_tools", False)),
+    )
     if tool_count is None:
         return
     server_config["enabled"] = True
@@ -1092,8 +1106,8 @@ _MCP_USAGE = (
     "hermes mcp catalog                            List Nous-approved MCPs",
     "hermes mcp install <name>                     Install a catalog MCP",
     "hermes mcp serve                              Run as MCP server",
-    "hermes mcp add <name> --url <endpoint>        Add a custom MCP server",
-    "hermes mcp add <name> --command <cmd>         Add a stdio server",
+    "hermes mcp add <name> --url <endpoint> [--all-tools]  Add a custom MCP server",
+    "hermes mcp add <name> --command <cmd> [--all-tools]   Add a stdio server",
     "hermes mcp add <name> --preset <preset>       Add from a known preset",
     "hermes mcp remove <name>                      Remove a server",
     "hermes mcp list                               List configured servers",

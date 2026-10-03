@@ -317,3 +317,14 @@ class TestWordBoundaryAndRegionScoping:
         for command in ("confirm -rf /tmp/x", "testparm -rf /etc/x",
                         "perform -v cleanup"):
             assert approval_floors._match_user_deny_rule(command) is None, command
+
+    def test_rm_option_does_not_match_rm_backup_glob(self, deny_config):
+        """Container runtime options must not be mistaken for the rm command."""
+        deny_config(["*rm *backup*"])
+        for command in (
+            "docker run --rm -v /srv/backup:/backup alpine",
+            "podman --rm -v /srv/backup:/backup alpine",
+        ):
+            assert approval_floors._match_user_deny_rule(command) is None, command
+
+        assert approval_floors._match_user_deny_rule("rm -rf /srv/backup")

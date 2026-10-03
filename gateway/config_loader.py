@@ -223,17 +223,36 @@ _SHARED_KEYS: tuple = (
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )
 
+# Matrix has no channel-prompt consumer; keep the old generic key from becoming
+# a silently accepted dead schema field there while preserving generic bridging
+# for registered plugin platforms.
+_SHARED_KEY_EXCLUSIONS = frozenset({("channel_prompts", Platform.MATRIX)})
+
 def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_block: bool = False) -> dict:
     """Shared-key bridge; a ROOT-level ``<platform>:`` block (which ``merge_platform_sections``
     never copies into ``platforms_data``) also gets its adapter keys promoted into ``extra``, with
     the same typed-key exclusion and explicit-``extra`` precedence as ``PlatformConfig.from_dict``."""
     bridged: dict = {}
+    excluded_keys = {
+        key for key, excluded_platform in _SHARED_KEY_EXCLUSIONS
+        if excluded_platform == plat
+    }
     if root_block:
         typed = PlatformConfig._TYPED_KEYS | {"channel_overrides"}
-        bridged.update({k: v for k, v in platform_cfg.items() if k not in typed})
-        bridged.update(_coerce_dict(platform_cfg.get("extra", {})))
+        bridged.update({
+            k: v for k, v in platform_cfg.items()
+            if k not in typed and k not in excluded_keys
+        })
+        bridged.update({
+            k: v for k, v in _coerce_dict(platform_cfg.get("extra", {})).items()
+            if k not in excluded_keys
+        })
     for key, only, transform in _SHARED_KEYS:
-        if key not in platform_cfg or (only is not None and plat not in only):
+        if (
+            key in excluded_keys
+            or key not in platform_cfg
+            or (only is not None and plat not in only)
+        ):
             continue
         if transform == "dm":
             bridged[key] = _dm_behavior_choice(platform_cfg[key], gw_data.get("unauthorized_dm_behavior", "pair"))
@@ -268,6 +287,17 @@ def bridge_platform_shared_keys(
         platform_cfg, cfg_toplevel = platform_section(yaml_cfg, plat.value, gateway_platforms)
         if not isinstance(platform_cfg, dict):
             continue
+        excluded_keys = {
+            key for key, excluded_platform in _SHARED_KEY_EXCLUSIONS
+            if excluded_platform == plat
+        }
+        if excluded_keys and isinstance(platforms_data.get(plat.value), dict):
+            plat_data = platforms_data[plat.value]
+            for key in excluded_keys:
+                plat_data.pop(key, None)
+                extra = plat_data.get("extra")
+                if isinstance(extra, dict):
+                    extra.pop(key, None)
         bridged = _bridged_keys(plat, platform_cfg, gw_data, root_block=cfg_toplevel)
         has_channel_overrides = "channel_overrides" in platform_cfg
         if has_channel_overrides and isinstance(platform_cfg.get("channel_overrides"), dict):
