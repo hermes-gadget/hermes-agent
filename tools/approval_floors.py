@@ -31,8 +31,9 @@ logger = logging.getLogger("tools.approval")
 #     of the same blob co-occurred into a match
 #     ("ssh a 'rm -rf /tmp/x' && ssh b 'du -sh /mnt/disk3'").
 # Rules:
-#   * Every literal "rm" in a deny glob now requires a token boundary on its
-#     left (not preceded by [a-z0-9_]).
+#   * Every literal "rm" in a deny glob now requires a command-token boundary
+#     on its left (not preceded by [a-z0-9_-]); this excludes options such as
+#     Docker's ``--rm`` as well as words such as ``confirm``.
 #   * Globs that pair rm with a protected path fragment are additionally
 #     region-scoped: candidate and pattern are compared per shell region
 #     (split on ; & | newline ) and backtick), so rm and the path must appear
@@ -41,7 +42,7 @@ logger = logging.getLogger("tools.approval")
 #     formatted/projection candidates) keep matching.
 _PROTECTED_PATH_TOKENS = ("/mnt", ".ssh", ".gnupg", ".lmstudio", "huggingface", "backup")
 _DENY_REGION_SPLIT_RE = re.compile(r"[;&|\n)`]+")
-_RM_TOKEN_RX = r"(?<![a-z0-9_])rm"
+_RM_TOKEN_RX = r"(?<![a-z0-9_-])rm"
 
 
 @functools.lru_cache(maxsize=1024)

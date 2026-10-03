@@ -35,3 +35,13 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_mcp_add_accepts_non_interactive_tool_selection_flag():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_mcp_parser(sub, cmd_mcp=_h("mcp"))
+
+    for flag in ("--yes", "--all-tools"):
+        ns = parser.parse_args(["mcp", "add", "server", "--command", "node", flag])
+        assert ns.all_tools is True

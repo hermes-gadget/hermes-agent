@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 from unittest.mock import Mock
+from urllib.parse import urlparse
 
 import pm
 import pytest
@@ -53,3 +54,12 @@ def test_auth_uses_pm_import_check(setup_module, monkeypatch):
     setup_module._ensure_deps()
 
     ensure.assert_called_once_with("google")
+
+
+def test_manual_oauth_redirect_uses_a_browser_safe_loopback_port(setup_module):
+    """The copy-paste OAuth flow must not use Chrome's unsafe privileged ports."""
+    redirect = urlparse(setup_module.REDIRECT_URI)
+
+    assert redirect.scheme == "http"
+    assert redirect.hostname == "localhost"
+    assert redirect.port is not None and redirect.port >= 1024

@@ -53,6 +53,7 @@ def _make_args(**kwargs):
         "auth": None,
         "preset": None,
         "env": None,
+        "all_tools": False,
         "mcp_action": None,
     }
     defaults.update(kwargs)
@@ -237,6 +238,32 @@ class TestMcpAdd:
             "MY_API_KEY": "secret123",
             "DEBUG": "true",
         }
+
+
+    def test_add_all_tools_flag_skips_selection_prompt(self, tmp_path, capsys, monkeypatch):
+        """The scripting flag must complete discovery without reading stdin."""
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [("search", "Search repos")],
+        )
+
+        def fail_if_prompted(_prompt):
+            pytest.fail("--all-tools must not prompt for tool selection")
+
+        monkeypatch.setattr("builtins.input", fail_if_prompted)
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(
+            _make_args(
+                name="scripted",
+                mcp_command="npx",
+                args=["@mcp/server"],
+                all_tools=True,
+            )
+        )
+
+        assert "1/1 tools enabled" in capsys.readouterr().out
 
 
     def test_add_preset_fills_transport(self, tmp_path, capsys, monkeypatch):
