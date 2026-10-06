@@ -1078,3 +1078,69 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+class TestTrustedCronInstructionWriter:
+    """``security.protected_instruction_trusted_job_ids``: owner-granted, cron-only,
+    fail-closed. A trusted job's cron run may write instruction files when no human
+    channel exists; every other unattended write still blocks."""
+
+    @pytest.fixture(autouse=True)
+    def _gate_on(self, monkeypatch):
+        import tools.file_tools_write_guards as ft
+
+        monkeypatch.setattr(ft, "_protected_instruction_config", lambda: (True, []))
+        from tools.terminal_tool import set_approval_callback
+
+        set_approval_callback(None)  # headless: no CLI callback
+        yield
+
+    def _write(self, path, content="trusted-sync", task_id="cron:3d101061a38b:run-1"):
+        import json
+
+        from tools.file_tools import write_file_tool
+
+        return json.loads(write_file_tool(str(path), content, task_id=task_id))
+
+    def _trust(self, monkeypatch, job_ids, *, cron=True, config_raises=False):
+        import tools.approval_context as ac
+
+        monkeypatch.setattr(ac, "_is_cron_approval_context", lambda: cron)
+        import hermes_cli.config as hc
+
+        if config_raises:
+            def _boom(*_a, **_k):
+                raise RuntimeError("config unreadable")
+
+            monkeypatch.setattr(hc, "load_config", _boom)
+        else:
+            monkeypatch.setattr(hc, "load_config", lambda: {
+                "security": {"protected_instruction_trusted_job_ids": list(job_ids)}})
+
+    def test_trusted_cron_job_write_is_allowed(self, tmp_path, monkeypatch):
+        self._trust(monkeypatch, ["3d101061a38b"])
+        target = tmp_path / "AGENTS.md"
+        res = self._write(target)
+        assert not res.get("error"), res
+        assert target.read_text(encoding="utf-8") == "trusted-sync"
+
+    def test_untrusted_cron_job_write_still_blocked(self, tmp_path, monkeypatch):
+        self._trust(monkeypatch, ["someotherjob"])
+        target = tmp_path / "AGENTS.md"
+        res = self._write(target)
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+
+    def test_trusted_id_outside_cron_context_is_blocked(self, tmp_path, monkeypatch):
+        self._trust(monkeypatch, ["3d101061a38b"], cron=False)
+        target = tmp_path / "AGENTS.md"
+        res = self._write(target)
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+
+    def test_config_read_failure_fails_closed(self, tmp_path, monkeypatch):
+        self._trust(monkeypatch, [], config_raises=True)
+        target = tmp_path / "AGENTS.md"
+        res = self._write(target)
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()

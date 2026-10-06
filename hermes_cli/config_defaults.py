@@ -1778,6 +1778,11 @@ DEFAULT_CONFIG = {
         # globs on the basename (e.g. "*.mdc").
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
+        # Cron job ids the owner trusts to write agent-instruction files unattended (e.g. a
+        # doc-sync maintenance job). ONLY these jobs' cron runs skip the always-ask gate when
+        # no human channel exists; every other unattended write stays fail-closed. Grant by
+        # job id (visible in `hermes cron list`); removing an id revokes the grant.
+        "protected_instruction_trusted_job_ids": [],
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
