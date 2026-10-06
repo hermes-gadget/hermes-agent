@@ -56,7 +56,12 @@ def _connect() -> sqlite3.Connection:
 
     path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
     _ensure_cron_dir(path.parent)
-    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+    # Patience under burst contention: many workers + the ticker write this ledger at once
+    # (job bursts on a busy host), and the 5s default proved too tight — a worker's
+    # adopt_claimed_execution hit "database is locked" and killed the dispatch (2026-10-06).
+    # The ledger is low-volume; waiting longer beats failing the whole job.
+    return open_db(path, db_label="cron/executions.db", busy_timeout_ms=10000,
+                   synchronous_full=True, initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:

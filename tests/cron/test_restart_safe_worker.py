@@ -1367,3 +1367,81 @@ def test_restart_wait_counts_exclude_only_scoped_workers(tmp_path, monkeypatch):
     keys = {scheduler._inflight_key(job_id) for job_id in jobs}
     assert not keys & scheduler._scope_isolated_job_ids
     assert not keys & set(scheduler._running_worker_pids)
+
+
+def test_external_worker_rides_out_transient_locked_ledger(tmp_path, monkeypatch):
+    """A burst of executions.db write-lock contention must not kill the dispatch:
+    adoption is retried on lock/busy errors before the worker refuses ownership."""
+    import sqlite3
+
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    calls = {"n": 0}
+
+    def flaky_adopt(execution_id):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        return {"id": execution_id, "status": "running"}
+
+    monkeypatch.setattr("cron.executions.adopt_claimed_execution", flaky_adopt)
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *_a, **_k: True)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+    assert calls["n"] == 3
+    assert ack.exists()
+
+
+def test_external_worker_adopt_retry_is_bounded_and_lock_only(tmp_path, monkeypatch):
+    """Retries cover lock/busy contention only and are bounded: a permanent lock keeps
+    the old fail-closed behaviour, and non-lock errors propagate immediately."""
+    import sqlite3
+
+    import cron.scheduler as scheduler
+
+    def write_payload():
+        payload = tmp_path / "payload.json"
+        payload.write_text(
+            json.dumps({
+                "job": {"id": "job-1", "execution_id": "exec-1"},
+                "profile_home": str(tmp_path / "profile"),
+            }),
+            encoding="utf-8",
+        )
+        return payload
+
+    ack = tmp_path / "exec-1.ready"
+    lock_calls = {"n": 0}
+
+    def always_locked(execution_id):
+        lock_calls["n"] += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("cron.executions.adopt_claimed_execution", always_locked)
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        scheduler._run_external_worker_payload(write_payload(), ack)
+    assert lock_calls["n"] == 4  # first attempt + 3 retries
+
+    other_calls = {"n": 0}
+
+    def other_error(execution_id):
+        other_calls["n"] += 1
+        raise sqlite3.OperationalError("no such table: executions")
+
+    monkeypatch.setattr("cron.executions.adopt_claimed_execution", other_error)
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        scheduler._run_external_worker_payload(write_payload(), ack)
+    assert other_calls["n"] == 1

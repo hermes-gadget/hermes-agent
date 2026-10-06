@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -3841,6 +3842,34 @@ def _launch_external_cron_worker(job: dict) -> bool:
     )
 
 
+# Transient executions.db write-lock contention (bursts of workers + ticker on a busy host)
+# must not kill a dispatch: one "database is locked" from adopt_claimed_execution failed the
+# whole job and alerted (2026-10-06). Bounded retries ride out the burst; non-lock errors and
+# the final lock failure still propagate unchanged.
+_ADOPT_LOCK_RETRY_DELAYS = (1.0, 3.0, 6.0)
+
+
+def _adopt_claimed_execution_with_lock_retries(execution_id: str):
+    """Adopt the claimed execution, riding out transient executions.db lock/busy errors."""
+    from cron.executions import adopt_claimed_execution
+    from hermes_state_errors import is_sqlite_lock_error
+
+    attempts = len(_ADOPT_LOCK_RETRY_DELAYS) + 1
+    for attempt, delay in enumerate((0.0, *_ADOPT_LOCK_RETRY_DELAYS), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            return adopt_claimed_execution(execution_id)
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_lock_error(exc) or attempt == attempts:
+                raise
+            logger.warning(
+                "Cron worker adoption for execution %s hit a busy executions.db "
+                "(attempt %d/%d); retrying: %s",
+                execution_id, attempt, attempts, exc,
+            )
+
+
 def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     """Adopt and execute one gateway-dispatched cron payload.
 
@@ -3900,7 +3929,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         GatewayStartupMixin._register_config_hooks(
             "Cron external worker: config hook registration failed", level=logging.WARNING)
         with use_cron_store(profile_home):
-            if adopt_claimed_execution(execution_id) is None:
+            if _adopt_claimed_execution_with_lock_retries(execution_id) is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "
                     "could not be established",

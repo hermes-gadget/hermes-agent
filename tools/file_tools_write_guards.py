@@ -11,6 +11,7 @@ whole-file overwrite of content this task never saw or that changed since.
 """
 
 import fnmatch
+import logging
 import os
 from pathlib import Path
 
@@ -26,6 +27,8 @@ from tools.file_tools_paths import (
     _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
 from tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
 import itertools
+
+logger = logging.getLogger(__name__)
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -260,6 +263,33 @@ _APPROVAL_UNAVAILABLE = "requires approval but the approval subsystem is unavail
 _NO_HUMAN = "requires approval but no interactive user or gateway is present to approve it."
 
 
+def _trusted_cron_instruction_writer(task_id: str) -> str | None:
+    """Return the cron job id when this write is a cron run of a job the owner explicitly
+    trusts to write agent-instruction files (``security.protected_instruction_trusted_job_ids``).
+
+    Owner-granted, narrowly scoped, audited: only cron-run task ids (``cron:<job_id>:<run>``)
+    inside a cron approval context qualify; every other unattended write stays fail-closed.
+    Unreadable config, malformed input, or a non-cron context -> ``None`` (fail closed).
+    """
+    try:
+        if not task_id or not str(task_id).startswith("cron:"):
+            return None
+        job_id = str(task_id).split(":", 2)[1]
+        if not job_id:
+            return None
+        from tools.approval_context import _is_cron_approval_context
+        if not _is_cron_approval_context():
+            return None
+        from hermes_cli.config import load_config, cfg_get
+        trusted = cfg_get(load_config(), "security", "protected_instruction_trusted_job_ids",
+                          default=[])
+        if not isinstance(trusted, list):
+            return None
+        return job_id if job_id in {str(t) for t in trusted if t} else None
+    except Exception:
+        return None
+
+
 def _request_protected_instruction_approval(reasons: list[str], task_id: str = "default") -> str | None:
     """Ask the human to approve a write to protected instruction file(s); ``None`` when approved.
 
@@ -321,7 +351,16 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             callback = None
         if callback is None:
             # No human channel (script, cron, background thread): fail closed —
-            # auto-approving here would recreate the persistence vector.
+            # auto-approving here would recreate the persistence vector. ONE
+            # owner-granted exception: a cron run of a job listed in
+            # security.protected_instruction_trusted_job_ids may proceed; the
+            # grant is scoped to that job id, cron-context only, and audited.
+            trusted_job = _trusted_cron_instruction_writer(task_id)
+            if trusted_job:
+                logger.warning(
+                    "Protected-instruction write allowed for owner-trusted cron job %s: %s",
+                    trusted_job, targets)
+                return None
             return blocked.format(why=_NO_HUMAN)
         # -q (every kanban worker), cron and unattended platforms can have a callback registered that nobody
         # answers: fail closed now, and never auto-approve, whatever approvals.<context>_mode says.
