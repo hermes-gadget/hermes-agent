@@ -1445,3 +1445,59 @@ def test_external_worker_adopt_retry_is_bounded_and_lock_only(tmp_path, monkeypa
     with pytest.raises(sqlite3.OperationalError, match="no such table"):
         scheduler._run_external_worker_payload(write_payload(), ack)
     assert other_calls["n"] == 1
+
+
+def test_dispatch_handoff_rides_out_transient_locked_ledger(monkeypatch):
+    """Dispatcher-side twin of the adopt retry: a transient executions.db lock burst during
+    the handoff fence must not kill the dispatch ("dispatch failed: database is locked" failed
+    whole jobs on 2026-10-07/09)."""
+    import sqlite3
+
+    import cron.scheduler as scheduler
+
+    calls = {"n": 0}
+
+    def flaky_handoff(execution_id):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        return {"id": execution_id, "status": "claimed"}
+
+    monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", flaky_handoff)
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _seconds: None)
+
+    assert scheduler._mark_execution_handoff_pending_with_lock_retries("exec-1") is not None
+    assert calls["n"] == 3
+
+
+def test_dispatch_handoff_retry_is_bounded_and_lock_only(monkeypatch):
+    """Bounded retries, lock/busy only: a permanent lock keeps the fail-closed behaviour and
+    non-lock errors propagate immediately."""
+    import sqlite3
+
+    import cron.scheduler as scheduler
+
+    lock_calls = {"n": 0}
+
+    def always_locked(execution_id):
+        lock_calls["n"] += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", always_locked)
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        scheduler._mark_execution_handoff_pending_with_lock_retries("exec-1")
+    assert lock_calls["n"] == 4  # first attempt + 3 retries
+
+    other_calls = {"n": 0}
+
+    def other_error(execution_id):
+        other_calls["n"] += 1
+        raise sqlite3.OperationalError("no such table: executions")
+
+    monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", other_error)
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        scheduler._mark_execution_handoff_pending_with_lock_retries("exec-1")
+    assert other_calls["n"] == 1

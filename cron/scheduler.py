@@ -3660,7 +3660,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     if dispatch.mode == "in_process":
         return False
 
-    if mark_execution_handoff_pending(execution_id) is None:
+    if _mark_execution_handoff_pending_with_lock_retries(execution_id) is None:
         raise RuntimeError(
             "cron execution claim changed before external worker handoff"
         )
@@ -3865,6 +3865,35 @@ def _adopt_claimed_execution_with_lock_retries(execution_id: str):
                 raise
             logger.warning(
                 "Cron worker adoption for execution %s hit a busy executions.db "
+                "(attempt %d/%d); retrying: %s",
+                execution_id, attempt, attempts, exc,
+            )
+
+
+_HANDOFF_LOCK_RETRY_DELAYS = (1.0, 3.0, 6.0)
+
+
+def _mark_execution_handoff_pending_with_lock_retries(execution_id: str):
+    """Fence the handoff, riding out transient executions.db lock/busy errors.
+
+    Dispatcher-side twin of ``_adopt_claimed_execution_with_lock_retries``: a burst of
+    executions.db contention between the gateway ticker and workers surfaced as
+    "Restart-safe cron worker dispatch failed: database is locked" and failed whole jobs
+    (2026-10-07, 2026-10-09). The fenced UPDATE is idempotent, so retrying is safe; non-lock
+    errors and the final lock failure still propagate unchanged."""
+    from hermes_state_errors import is_sqlite_lock_error
+
+    attempts = len(_HANDOFF_LOCK_RETRY_DELAYS) + 1
+    for attempt, delay in enumerate((0.0, *_HANDOFF_LOCK_RETRY_DELAYS), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            return mark_execution_handoff_pending(execution_id)
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_lock_error(exc) or attempt == attempts:
+                raise
+            logger.warning(
+                "Cron worker handoff for execution %s hit a busy executions.db "
                 "(attempt %d/%d); retrying: %s",
                 execution_id, attempt, attempts, exc,
             )
