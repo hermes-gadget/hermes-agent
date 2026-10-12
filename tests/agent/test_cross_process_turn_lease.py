@@ -538,9 +538,13 @@ def test_run_conversation_interrupts_when_lease_refresh_lost(monkeypatch):
 
 
 def test_run_conversation_interrupts_when_lease_refresh_errors(monkeypatch):
+    """A refresh error that persists through the retry grace still fails closed."""
     db = _DB()
     agent = _agent_with_db(db)
     agent._session_turn_lease_refresh_interval = 0.01
+    # Short grace/retry so the persistent-error interrupt fires inside the test window.
+    agent._session_turn_lease_refresh_grace_s = 0.05
+    agent._session_turn_lease_refresh_retry_s = 0.01
     interrupt_calls = []
 
     def track_interrupt(message=None, hard_cancel=False, **kwargs):
@@ -582,10 +586,60 @@ def test_run_conversation_interrupts_when_lease_refresh_errors(monkeypatch):
     assert interrupt_calls[0][1] is True
 
 
+def test_transient_refresh_error_recovers_within_grace_without_interrupt(monkeypatch):
+    """A refresh ERROR is not a lost lease: a transient failure (e.g. a busy state.db while
+    another process holds the write lock) must recover inside the grace window without
+    interrupting the turn, and the refresher keeps ticking afterwards."""
+    db = _DB()
+    agent = _agent_with_db(db)
+    agent._session_turn_lease_refresh_interval = 0.01
+    agent._session_turn_lease_refresh_grace_s = 0.5
+    agent._session_turn_lease_refresh_retry_s = 0.01
+    interrupt_calls = []
+    attempts = {"n": 0}
+
+    def track_interrupt(message=None, hard_cancel=False, **kwargs):
+        interrupt_calls.append((message, hard_cancel))
+        agent._interrupt_requested = True
+        agent._interrupt_message = message
+
+    agent.interrupt = track_interrupt
+
+    def transient_refresh_error(session_id, holder, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise OSError("database is locked")
+        return True
+
+    db.refresh_session_turn_lease = transient_refresh_error
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        time.sleep(0.2)  # several refresh ticks fire in this window
+        assert not getattr(_agent, "_interrupt_requested", False), (
+            "transient refresh error interrupted the turn"
+        )
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[{"role": "user", "content": "seed"}],
+    )
+
+    assert result["final_response"] == "ok"
+    assert not interrupt_calls
+    assert attempts["n"] >= 3  # first call failed, the retry succeeded, ticks kept coming
+
+
 def test_refresh_error_after_loop_completion_does_not_poison_next_turn(monkeypatch):
     db = _DB()
     agent = _agent_with_db(db)
     agent._session_turn_lease_refresh_interval = 0.01
+    # Short grace/retry so the persistent-error interrupt fires inside the test window.
+    agent._session_turn_lease_refresh_grace_s = 0.05
+    agent._session_turn_lease_refresh_retry_s = 0.01
     refresh_started = threading.Event()
     release_refresh = threading.Event()
     interrupt_started = threading.Event()

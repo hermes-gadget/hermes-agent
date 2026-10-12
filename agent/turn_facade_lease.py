@@ -10,6 +10,7 @@ bodies run on per-handle workers), not per-turn threads.
 import logging
 import os
 import threading
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -22,6 +23,13 @@ _REASON_LEASE_LOST = "session turn lease lost"
 
 LEASE_TTL_SECONDS = 300.0
 LEASE_WAIT_SECONDS = 1800.0
+
+# Transient refresh-error grace: a busy state.db (another Hermes process holding the write lock
+# for 20-60s, e.g. a checkpoint under disk pressure) is NOT evidence the lease was lost — only a
+# holder-fenced UPDATE miss is. Retry within this window before failing closed; the window stays
+# far below LEASE_TTL_SECONDS so the row can never expire unrefreshed while the turn runs.
+LEASE_REFRESH_ERROR_GRACE_SECONDS = 90.0
+LEASE_REFRESH_ERROR_RETRY_SECONDS = 5.0
 
 
 class DurableTurnLease:
@@ -39,6 +47,10 @@ class DurableTurnLease:
         self.holder = holder
         self.stop = threading.Event()
         self.refresh_interval = float(getattr(agent, "_session_turn_lease_refresh_interval", 60.0))
+        self.refresh_grace_s = float(getattr(
+            agent, "_session_turn_lease_refresh_grace_s", LEASE_REFRESH_ERROR_GRACE_SECONDS))
+        self.refresh_retry_s = float(getattr(
+            agent, "_session_turn_lease_refresh_retry_s", LEASE_REFRESH_ERROR_RETRY_SECONDS))
         self._lock = threading.Lock()
         self.turn_active = False
         self.interrupt_message: Optional[str] = None
@@ -180,14 +192,22 @@ class DurableTurnLease:
                 _set_interrupt(False, agent._execution_thread_id)
 
     def refresh_tick(self):
-        """One periodic renewal (every ``refresh_interval`` via the shared scheduler); a miss or
-        error interrupts the turn. Returning False stops the timer.
+        """One periodic renewal (every ``refresh_interval`` via the shared scheduler). Returning
+        False stops the timer.
 
         The holder-qualified UPDATE fences a late refresher from a successor lease. The façade's
         finally sets ``stop`` before releasing, so a holder-fenced miss observed after stop is not
-        a loss."""
+        a loss.
+
+        A holder-fenced MISS (the row is no longer ours) interrupts at once: that is definitive
+        loss. A refresh ERROR (a busy state.db — another process holding the write lock for
+        seconds — is the common case) is NOT evidence of loss: the row may still be ours and the
+        lease stays valid for ``LEASE_TTL_SECONDS``. Retry inside a bounded grace window
+        (``refresh_grace_s``, far below the TTL) before failing closed, so a transient lock spike
+        cannot abort a healthy turn."""
         if self.stop.is_set():
             return False
+        last_error: Optional[BaseException] = None
         try:
             if self.db.refresh_session_turn_lease(
                 self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS
@@ -199,15 +219,42 @@ class DurableTurnLease:
                 "Lost session turn lease while turn is active: %s", self._current_session_id()
             )
             self._interrupt_turn("Session turn lease lost; stopping to protect the transcript.")
-        except Exception:
+            return False
+        except Exception as exc:
             if self.stop.is_set():
                 return False
+            last_error = exc
             logger.warning(
-                "Failed to refresh session turn lease: %s", self._current_session_id(), exc_info=True,
+                "Failed to refresh session turn lease (retrying within %.0fs grace): %s",
+                self.refresh_grace_s, self._current_session_id(), exc_info=True,
             )
-            self._interrupt_turn(
-                "Session turn lease could not be refreshed; stopping to protect the transcript."
+        deadline = time.monotonic() + max(0.0, self.refresh_grace_s)
+        while not self.stop.is_set() and time.monotonic() < deadline:
+            time.sleep(min(max(0.01, self.refresh_retry_s), max(0.0, deadline - time.monotonic())))
+            if self.stop.is_set():
+                return False
+            try:
+                if self.db.refresh_session_turn_lease(
+                    self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS
+                ):
+                    return None
+            except Exception as retry_exc:
+                last_error = retry_exc
+                continue
+            # A miss after an error is definitive: the row is no longer ours.
+            logger.error(
+                "Lost session turn lease while turn is active: %s", self._current_session_id()
             )
+            self._interrupt_turn("Session turn lease lost; stopping to protect the transcript.")
+            return False
+        if self.stop.is_set():
+            return False
+        logger.warning(
+            "Failed to refresh session turn lease: %s (%s)", self._current_session_id(), last_error,
+        )
+        self._interrupt_turn(
+            "Session turn lease could not be refreshed; stopping to protect the transcript."
+        )
         return False
 
 
