@@ -23,7 +23,7 @@ def finish_interrupted_run(job, execution_id, delivery_error):
             update_job(job['id'], {'last_delivery_error': delivery_error})
         except Exception as exc:
             logger.debug('Failed recording delivery_error for interrupted job %s: %s', job['id'], exc, exc_info=True)
-    scheduler.finish_execution(execution_id, success=False,
+    scheduler._finish_execution_with_lock_retries(execution_id, success=False,
                                error='Interrupted by gateway shutdown before terminal completion.')
 
 
@@ -88,7 +88,7 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
     marked = scheduler.self_removal_delivery_allowed(job["id"]) or scheduler.mark_job_run(
         job["id"], d.success, d.error, **mark_kwargs)
     if fire_owner is not None and not marked:
-        scheduler.finish_execution(
+        scheduler._finish_execution_with_lock_retries(
             execution_id, success=False,
             error="Fire claim ownership lost before terminal completion.")
         return True
@@ -113,7 +113,7 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         scheduler._mark_incident_alerted(d.failure_incident_id)
     from functools import partial
     from cron.executions import FIRER_FINISHED_STATES, get_execution, recover_receipted_execution
-    finish = partial(recover_receipted_execution, job_id=job['id']) if recovered else scheduler.finish_execution
+    finish = partial(recover_receipted_execution, job_id=job['id']) if recovered else scheduler._finish_execution_with_lock_retries
     finished = finish(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
     if recovered and finished is None:

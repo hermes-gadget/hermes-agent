@@ -1501,3 +1501,141 @@ def test_dispatch_handoff_retry_is_bounded_and_lock_only(monkeypatch):
     with pytest.raises(sqlite3.OperationalError, match="no such table"):
         scheduler._mark_execution_handoff_pending_with_lock_retries("exec-1")
     assert other_calls["n"] == 1
+
+
+def test_execution_creation_rides_out_transient_locked_ledger(monkeypatch):
+    """Execution creation is the first executions.db write of every dispatch; a transient
+    lock burst there must not skip the whole fire ("not dispatched: execution creation
+    failed: database is locked" skipped ajax-watch/ajax-fetch on 2026-10-14)."""
+    import sqlite3
+
+    import cron.scheduler as scheduler
+
+    calls = {"n": 0}
+
+    def flaky_create(job_id, *, source, scheduled_instant=None):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        return {"id": "exec-1", "job_id": job_id, "status": "claimed"}
+
+    monkeypatch.setattr(scheduler, "create_execution", flaky_create)
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _seconds: None)
+
+    assert scheduler._create_execution_with_lock_retries("job-1", source="builtin")["id"] == "exec-1"
+    assert calls["n"] == 3
+
+
+def test_execution_creation_retry_is_bounded_and_lock_only(monkeypatch):
+    """Bounded retries, lock/busy only: a permanent lock keeps the fail-closed behaviour and
+    non-lock errors propagate immediately."""
+    import sqlite3
+
+    import cron.scheduler as scheduler
+
+    lock_calls = {"n": 0}
+
+    def always_locked(job_id, *, source, scheduled_instant=None):
+        lock_calls["n"] += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(scheduler, "create_execution", always_locked)
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        scheduler._create_execution_with_lock_retries("job-1", source="builtin")
+    assert lock_calls["n"] == 4  # first attempt + 3 retries
+
+    other_calls = {"n": 0}
+
+    def other_error(job_id, *, source, scheduled_instant=None):
+        other_calls["n"] += 1
+        raise sqlite3.OperationalError("no such table: executions")
+
+    monkeypatch.setattr(scheduler, "create_execution", other_error)
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        scheduler._create_execution_with_lock_retries("job-1", source="builtin")
+    assert other_calls["n"] == 1
+
+
+def test_execution_start_rides_out_transient_locked_ledger(monkeypatch):
+    """The in-process claimed→running CAS must ride out a lock burst instead of raising into
+    the run's catch-all and recording a failure for a run that never started."""
+    import sqlite3
+
+    import cron.scheduler as scheduler
+
+    calls = {"n": 0}
+
+    def flaky_running(execution_id):
+        calls["n"] += 1
+        if calls["n"] <= 1:
+            raise sqlite3.OperationalError("database is locked")
+        return {"id": execution_id, "status": "running"}
+
+    monkeypatch.setattr(scheduler, "mark_execution_running", flaky_running)
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _seconds: None)
+
+    assert scheduler._mark_execution_running_with_lock_retries("exec-1") is not None
+    assert calls["n"] == 2
+
+    # A lost CAS is not an error: None on the first call, no retry.
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda execution_id: None)
+    assert scheduler._mark_execution_running_with_lock_retries("exec-1") is None
+
+
+def test_execution_finish_rides_out_transient_locked_ledger(monkeypatch):
+    """The terminal ledger write must ride out a lock burst; a lock error there turned a
+    COMPLETED run into a recorded failure ("Error processing job ... database is locked",
+    2026-10-14)."""
+    import sqlite3
+
+    import cron.scheduler as scheduler
+
+    calls = {"n": 0}
+
+    def flaky_finish(execution_id, *, success, error=None, delivery_outcome=None):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        return {"id": execution_id, "status": "completed" if success else "failed"}
+
+    monkeypatch.setattr(scheduler, "finish_execution", flaky_finish)
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _seconds: None)
+
+    assert scheduler._finish_execution_with_lock_retries("exec-1", success=True)["status"] == "completed"
+    assert calls["n"] == 3
+
+
+def test_execution_finish_retry_is_bounded_and_lock_only(monkeypatch):
+    """Bounded retries, lock/busy only: a permanent lock keeps the fail-closed behaviour and
+    non-lock errors propagate immediately."""
+    import sqlite3
+
+    import cron.scheduler as scheduler
+
+    lock_calls = {"n": 0}
+
+    def always_locked(execution_id, *, success, error=None, delivery_outcome=None):
+        lock_calls["n"] += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(scheduler, "finish_execution", always_locked)
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        scheduler._finish_execution_with_lock_retries("exec-1", success=False, error="boom")
+    assert lock_calls["n"] == 4  # first attempt + 3 retries
+
+    other_calls = {"n": 0}
+
+    def other_error(execution_id, *, success, error=None, delivery_outcome=None):
+        other_calls["n"] += 1
+        raise sqlite3.OperationalError("no such table: executions")
+
+    monkeypatch.setattr(scheduler, "finish_execution", other_error)
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        scheduler._finish_execution_with_lock_retries("exec-1", success=False, error="boom")
+    assert other_calls["n"] == 1
