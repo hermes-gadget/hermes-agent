@@ -2639,7 +2639,7 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         if not execution_id:
             return
         try:
-            finish_execution(execution_id, success=False, error=error)
+            _finish_execution_with_lock_retries(execution_id, success=False, error=error)
         except Exception:
             logger.warning(
                 "Job '%s': failed to close unstarted execution ledger row",
@@ -2720,7 +2720,7 @@ def run_one_job(
     # API fires) crosses this seam.  Ensure the detached worker has a durable
     # attempt to adopt before any launch can occur.
     if not job.get("execution_id"):
-        execution = create_execution(
+        execution = _create_execution_with_lock_retries(
             job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))
         job["execution_id"] = execution["id"]
 
@@ -2758,7 +2758,7 @@ def run_one_job(
                     **({"expected_fire_owner": owner} if owner else {}),
                 )
             finally:
-                finish_execution(
+                _finish_execution_with_lock_retries(
                     execution_id, success=False, error=error,
                     delivery_outcome=delivery_outcome)
             return True
@@ -2807,9 +2807,9 @@ def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], executio
     terminal write instead of leaving fire_claim/last_status stale; otherwise discard."""
     if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
         mark_job_run(job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner)
-        finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
+        _finish_execution_with_lock_retries(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
     else:
-        finish_execution(
+        _finish_execution_with_lock_retries(
             execution_id, success=False,
             error="Fire claim ownership lost; stale result was discarded.")
 
@@ -3060,7 +3060,7 @@ def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Option
         except Exception as _rec_err:
             logger.debug(
                 "Failed recording delivery_error for interrupted job %s: %s", job["id"], _rec_err)
-    finish_execution(
+    _finish_execution_with_lock_retries(
         execution_id, success=False,
         error="Interrupted by gateway shutdown before terminal completion.")
 
@@ -3092,7 +3092,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     marked = self_removal_delivery_allowed(job["id"]) or mark_job_run(
         job["id"], d.success, d.error, **mark_kwargs)
     if fire_owner is not None and not marked:
-        finish_execution(
+        _finish_execution_with_lock_retries(
             execution_id, success=False,
             error="Fire claim ownership lost before terminal completion.")
         return True
@@ -3110,7 +3110,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         _mark_incident_alerted(d.failure_incident_id)
-    finish_execution(
+    _finish_execution_with_lock_retries(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
     return True
 
@@ -3167,7 +3167,7 @@ def _run_one_job_body(
 
     execution_id = job.get("execution_id")
     if not execution_id:
-        execution_id = create_execution(
+        execution_id = _create_execution_with_lock_retries(
             job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))["id"]
     delivery_attempted = False
     delivery_error = None
@@ -3185,7 +3185,7 @@ def _run_one_job_body(
             logger.info(
                 "Job '%s': one-shot dispatch limit reached — skipping",
                 job.get("name", job["id"]))
-            finish_execution(
+            _finish_execution_with_lock_retries(
                 execution_id, success=False,
                 error="Dispatch claim rejected; execution was not started.")
             return True  # not an error — already handled/removed
@@ -3194,7 +3194,7 @@ def _run_one_job_body(
         # Detached workers transition to running while adopting; in-process paths must win the
         # claimed->running CAS here before any user script or agent side effect may begin.
         external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
-        if not external_owner and mark_execution_running(execution_id) is None:
+        if not external_owner and _mark_execution_running_with_lock_retries(execution_id) is None:
             logger.warning("Cron job %s lost execution ownership before start; skipping", job["id"])
             return True
 
@@ -3363,7 +3363,7 @@ def _run_one_job_body(
             # Never let bookkeeping mask the original interruption.
             logger.error("Failed to record interrupted run for job %s: %s", job["id"], record_err)
         try:
-            finish_execution(
+            _finish_execution_with_lock_retries(
                 execution_id, success=False, error=_err_text, delivery_outcome=delivery_outcome)
         except Exception as record_err:
             logger.error("Failed to finish execution record for job %s: %s", job["id"], record_err)
@@ -3746,6 +3746,100 @@ def _mark_execution_handoff_pending_with_lock_retries(execution_id: str):
             )
 
 
+_CREATE_EXECUTION_LOCK_RETRY_DELAYS = (1.0, 3.0, 6.0)
+
+
+def _create_execution_with_lock_retries(job_id: str, *, source: str, scheduled_instant=None):
+    """Create the durable attempt row, riding out transient executions.db lock/busy errors.
+
+    Execution creation is the first executions.db write of every dispatch; a burst of ledger
+    contention made it raise "database is locked" and skipped the whole fire
+    ("Job '...' not dispatched: execution creation failed", 2026-10-14). Each call inserts a
+    fresh execution id, so retrying a failed attempt is safe; non-lock errors and the final
+    lock failure still propagate unchanged."""
+    from hermes_state_errors import is_sqlite_lock_error
+
+    attempts = len(_CREATE_EXECUTION_LOCK_RETRY_DELAYS) + 1
+    for attempt, delay in enumerate((0.0, *_CREATE_EXECUTION_LOCK_RETRY_DELAYS), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            return create_execution(job_id, source=source, scheduled_instant=scheduled_instant)
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_lock_error(exc) or attempt == attempts:
+                raise
+            logger.warning(
+                "Cron execution creation for job %s hit a busy executions.db "
+                "(attempt %d/%d); retrying: %s",
+                job_id, attempt, attempts, exc,
+            )
+
+
+_MARK_RUNNING_LOCK_RETRY_DELAYS = (1.0, 3.0, 6.0)
+
+
+def _mark_execution_running_with_lock_retries(execution_id: str):
+    """Win the claimed→running CAS, riding out transient executions.db lock/busy errors.
+
+    In-process twin of ``_adopt_claimed_execution_with_lock_retries``: a lock burst on this
+    CAS raised into the run's catch-all and recorded a failure for a run that never started.
+    A lost CAS still returns None (retries are lock-only); non-lock errors and the final
+    lock failure still propagate unchanged."""
+    from hermes_state_errors import is_sqlite_lock_error
+
+    attempts = len(_MARK_RUNNING_LOCK_RETRY_DELAYS) + 1
+    for attempt, delay in enumerate((0.0, *_MARK_RUNNING_LOCK_RETRY_DELAYS), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            return mark_execution_running(execution_id)
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_lock_error(exc) or attempt == attempts:
+                raise
+            logger.warning(
+                "Cron execution start for %s hit a busy executions.db "
+                "(attempt %d/%d); retrying: %s",
+                execution_id, attempt, attempts, exc,
+            )
+
+
+_FINISH_EXECUTION_LOCK_RETRY_DELAYS = (1.0, 3.0, 6.0)
+
+# Sentinel: call sites that did not pass delivery_outcome keep their exact call shape
+# (bookkeeping tests pin the kwargs), so an omitted argument stays omitted on the wire.
+_UNSET_DELIVERY_OUTCOME = object()
+
+
+def _finish_execution_with_lock_retries(
+    execution_id: str, *, success: bool, error=None, delivery_outcome=_UNSET_DELIVERY_OUTCOME,
+):
+    """Write the terminal ledger row, riding out transient executions.db lock/busy errors.
+
+    A lock burst on the terminal write turned a COMPLETED run into a recorded failure
+    ("Error processing job ... database is locked", 2026-10-14) and left other rows
+    non-terminal until recovery. The UPDATE is owner/status fenced, so retrying is safe;
+    non-lock errors and the final lock failure still propagate unchanged."""
+    from hermes_state_errors import is_sqlite_lock_error
+
+    attempts = len(_FINISH_EXECUTION_LOCK_RETRY_DELAYS) + 1
+    for attempt, delay in enumerate((0.0, *_FINISH_EXECUTION_LOCK_RETRY_DELAYS), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            if delivery_outcome is _UNSET_DELIVERY_OUTCOME:
+                return finish_execution(execution_id, success=success, error=error)
+            return finish_execution(
+                execution_id, success=success, error=error, delivery_outcome=delivery_outcome)
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_lock_error(exc) or attempt == attempts:
+                raise
+            logger.warning(
+                "Cron execution finish for %s hit a busy executions.db "
+                "(attempt %d/%d); retrying: %s",
+                execution_id, attempt, attempts, exc,
+            )
+
+
 def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     """Adopt and execute one gateway-dispatched cron payload.
 
@@ -4117,7 +4211,7 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     # Claim only when the worker actually starts, so a queued lease can't expire first.
     claimed = claim_job_for_fire(job["id"], return_job=True)
     if not claimed:
-        finish_execution(
+        _finish_execution_with_lock_retries(
             job["execution_id"], success=False, error="Fire claim lost; execution was not started.")
         return True
     # CAS returns the persisted record; bool fallback only for older test doubles.
@@ -4181,7 +4275,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     _claim_home = _get_hermes_home()
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
     try:
-        execution = create_execution(
+        execution = _create_execution_with_lock_retries(
             job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
         dispatched_job = dict(job, execution_id=execution["id"])
         note_cron_execution(dispatched_job)
@@ -4205,7 +4299,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     except Exception as submit_err:
         release_running_job(job_id, home=_claim_home)
         _clear_run_claim_best_effort()
-        finish_execution(
+        _finish_execution_with_lock_retries(
             execution["id"], success=False, error=f"Executor dispatch failed: {submit_err}")
         if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(submit_err):
             _not_dispatched_shutdown()
