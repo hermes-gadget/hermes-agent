@@ -838,10 +838,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
     ) -> dict[str, Any]:
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
         when multiplexing is off)."""
-        from gateway.channel_delegation import scoped_source_credentials
         with self._profile_scope_for_source(source):
-            with scoped_source_credentials(getattr(self, "config", None), source):
-                return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
+            return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
 
     def _run_agent_display_settings(self, source: SessionSource) -> GatewayRunner._RunAgentDisplay:
         """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""

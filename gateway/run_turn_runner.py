@@ -1226,10 +1226,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 if result is None:
                     raise
             else:
-                from gateway.channel_delegation import delegation_for_source, scoped_source_credentials
+                from gateway.channel_delegation import delegation_for_source
                 from tools.delegation_scope import scoped_channel_delegation
-                scope.enter_context(scoped_source_credentials(
-                    getattr(self._runner, "config", None), self._ctx.source))
                 scope.enter_context(scoped_channel_delegation(
                     delegation_for_source(getattr(self._runner, "config", None), self._ctx.source)))
                 scope.enter_context(api_policy_scope())

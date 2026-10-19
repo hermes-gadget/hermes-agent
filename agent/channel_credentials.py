@@ -6,8 +6,6 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
-from contextvars import ContextVar
-from urllib.parse import urlparse
 
 from hermes_constants import hermes_home_key
 from utils import is_truthy_value
@@ -17,44 +15,10 @@ logger = logging.getLogger(__name__)
 _FREE_MODELS = frozenset({"longcat-2.5-preview-free"})
 _coordinators = {}
 _coordinators_lock = threading.RLock()
-_channel_policy = ContextVar("channel_credential_policy", default=None)
 
 
 class ChannelCredentialUnavailable(ValueError):
     """A pinned channel must surface its unavailable key instead of selecting a fallback."""
-
-
-@contextmanager
-def scoped_channel_credentials(coordinator):
-    token = _channel_policy.set(coordinator)
-    try:
-        yield
-    finally:
-        _channel_policy.reset(token)
-
-
-def auxiliary_route():
-    """Auxiliary inference has its own permitted route, never the channel's fallback."""
-    if _channel_policy.get() is not None:
-        return "opencode-go", "deepseek-v4.1-flash", None, None, "chat_completions"
-    return None
-
-
-def guard_auxiliary_request(client, request):
-    if _channel_policy.get() is None:
-        return
-    route = urlparse(str(getattr(client, "base_url", "")))
-    if (request.get("model") != "deepseek-v4.1-flash" or route.hostname != "opencode.ai"
-            or not route.path.startswith(("/zen/go/", "/inference/go/"))):
-        raise ValueError("This channel permits auxiliary inference only on OpenCode Go DeepSeek V4.1 Flash.")
-
-
-def guarded_auxiliary_call(client, callback):
-    # Relay may rewrite a request; validate the final physical attempt.
-    def invoke(request):
-        guard_auxiliary_request(client, request)
-        return callback(request)
-    return invoke
 
 
 def coordinator_for(channel_key, provider, model, policy):
@@ -203,7 +167,7 @@ class ChannelCredentialPool:
         return current is not None and current.id == getattr(entry, "id", None)
 
     def mark_exhausted_and_rotate(self, **kwargs):
-        from agent.credential_pool import load_pool
+        from agent.credential_pool import _exhausted_ttl, _normalize_error_context, load_pool
 
         entry = self.current()
         if entry is None:
@@ -215,8 +179,42 @@ class ChannelCredentialPool:
             # A LongCat failure must not erase paid-usage exhaustion or bench
             # DeepSeek. Persist the existing model-scoped cooldown instead.
             with pool._lock:
-                pool._cool_down_model(entry, self.model, kwargs.get("error_context"), kwargs.get("failure_reason"))
+                context = _normalize_error_context(kwargs.get("error_context"))
+                # This agent has exactly one key. The shared pool's four-key
+                # one-hour bench does not describe its retry options.
+                context.setdefault("reset_at", time.time() + _exhausted_ttl(429, sole_credential=True))
+                pool._cool_down_model(entry, self.model, context, kwargs.get("failure_reason"))
         return None
+
+    def record_success(self, *, api_key):
+        """A successful retry retires only this key's observed LongCat cooldown."""
+        from dataclasses import replace
+        from agent.credential_pool import load_pool
+        from hermes_cli import auth
+
+        pool = load_pool(self.provider)
+        with pool._lock:
+            entry = next((e for e in pool.entries() if e.runtime_api_key == api_key and self.accepts(e)), None)
+            observed = (entry.model_cooldowns or {}).get(self.model) if entry else None
+            if observed is None:
+                return
+            # Read the latest row under the store lock: preserve paid quota,
+            # sibling model cooldowns and any newer failure from another writer.
+            with auth._auth_store_lock():
+                store = auth._load_auth_store()
+                rows = store.get("credential_pool", {}).get(self.provider, [])
+                for row in rows:
+                    if row.get("id") != entry.id or row.get("access_token") != entry.access_token:
+                        continue
+                    cooldowns = dict(row.get("model_cooldowns") or {})
+                    if cooldowns.get(self.model, 0) > observed:
+                        return
+                    cooldowns.pop(self.model, None)
+                    row["model_cooldowns"] = cooldowns
+                    auth._save_auth_store(store)
+                    pool._replace_entry(entry, replace(entry, model_cooldowns=cooldowns))
+                    logger.info("Channel credential recovered: label=%s model=%s", self.label, self.model)
+                    return
 
     def runtime(self):
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -264,8 +262,7 @@ def worker_credentials(child):
             # the construction-time placeholder instead of the reserved key.
             _snapshot_primary_runtime(child)
         logger.info("Channel subagent credential assigned: label=%s session=%s", pool.label, getattr(child, "session_id", ""))
-        with scoped_channel_credentials(pool.coordinator):
-            yield
+        yield
     finally:
         future = getattr(child, "_channel_credential_future", None)
         if future is not None and not future.done():
