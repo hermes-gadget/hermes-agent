@@ -1,0 +1,42 @@
+"""Conversation-scoped delegation settings carried through copied worker contexts."""
+
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator, Mapping
+
+
+_CHANNEL_KEYS = ("model", "provider", "max_concurrent_children")
+_channel_delegation: ContextVar[dict[str, Any] | None] = ContextVar("channel_delegation", default=None)
+
+
+@contextmanager
+def scoped_channel_delegation(overrides: Mapping[str, Any] | None) -> Iterator[None]:
+    """Bind a channel's settings without changing shared config or another conversation."""
+    values = {k: overrides[k] for k in _CHANNEL_KEYS if overrides and overrides.get(k) is not None}
+    token = _channel_delegation.set(values)
+    try:
+        yield
+    finally:
+        _channel_delegation.reset(token)
+
+
+def delegation_scope_key() -> tuple:
+    """Include channel settings in caches that freeze the delegate tool schema."""
+    return tuple(sorted((k, str(v)) for k, v in (_channel_delegation.get() or {}).items()))
+
+
+def apply_channel_delegation(config: dict) -> dict:
+    overrides = _channel_delegation.get()
+    if not overrides:
+        return config
+    merged = dict(config)
+    if overrides.get("provider"):
+        # A channel provider owns its endpoint/credentials/transport as one bundle.
+        # Global direct-endpoint or ACP settings must not redirect that route.
+        for key in ("base_url", "api_key", "api_mode", "command", "args", "request_overrides"):
+            merged.pop(key, None)
+    if overrides.get("provider") or overrides.get("model"):
+        # Fallbacks belong to the explicitly selected route, not the global one.
+        merged.pop("fallback_providers", None)
+    merged.update(overrides)
+    return merged

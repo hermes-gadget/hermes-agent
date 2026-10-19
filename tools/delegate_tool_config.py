@@ -7,6 +7,7 @@ import os
 from typing import Any, Dict, List, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
+from tools.delegation_scope import apply_channel_delegation
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -444,15 +445,15 @@ def _load_config() -> dict:
             from hermes_cli.config import load_config_readonly
             cfg = load_config_readonly().get("delegation") or {}
             if isinstance(cfg, dict):
-                return cfg
+                return apply_channel_delegation(cfg)
         except Exception:
             pass
     try:
         from cli import CLI_CONFIG
         cfg = CLI_CONFIG.get("delegation") or {}
-        return cfg if isinstance(cfg, dict) else {}
+        return apply_channel_delegation(cfg if isinstance(cfg, dict) else {})
     except Exception:
-        return {}
+        return apply_channel_delegation({})
 
 # OpenRouter routing filters: inherited from the parent, but reset to these defaults under a pinned provider — parent
 # filters (e.g. only=["Anthropic"]) would silently force the child back onto the parent's provider.

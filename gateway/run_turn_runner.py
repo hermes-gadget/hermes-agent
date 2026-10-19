@@ -1142,9 +1142,13 @@ class TurnRunner:
         ctx = self._ctx
         runner = self._runner
         skip_context_files = self._skip_context_files(platform_key)
+        from tools.delegation_scope import delegation_scope_key
+        cache_keys = runner._extract_cache_busting_config(ctx.user_config)
+        if channel_delegation := delegation_scope_key():
+            cache_keys["channel.delegation"] = channel_delegation
         sig = runner._agent_config_signature(
             turn_route["model"], turn_route["runtime"], ctx.enabled_toolsets, combined_ephemeral,
-            cache_keys=runner._extract_cache_busting_config(ctx.user_config),
+            cache_keys=cache_keys,
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
@@ -1891,6 +1895,15 @@ class TurnRunner:
         return final_response + "\n" + "\n".join(unique_tags)
 
     def run_sync(self):
+        """Scope child routing and limits before constructing the agent's frozen tool schemas."""
+        from gateway.channel_delegation import delegation_for_source
+        from tools.delegation_scope import scoped_channel_delegation
+
+        delegation = delegation_for_source(getattr(self._runner, "config", None), self._ctx.source)
+        with scoped_channel_delegation(delegation):
+            return self._run_sync()
+
+    def _run_sync(self):
         """Executor-thread body of the turn; returns the gateway result dict.
 
         The turn message lives on the shared TurnContext (``ctx.message``) so ``_run_agent_inner`` sees

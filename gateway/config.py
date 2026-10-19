@@ -351,18 +351,44 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
 
 
 @dataclass
-class ChannelOverride:
-    """Per-channel model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
+class ChannelDelegationOverride:
+    """Native subagent route and capacity for one channel and its threads."""
     model: Optional[str] = None
     provider: Optional[str] = None
-    system_prompt: Optional[str] = None
+    max_concurrent_children: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ChannelDelegationOverride":
+        return cls(**{f.name: data.get(f.name) for f in fields(cls)})
+
+
+@dataclass
+class ChannelOverride:
+    """Per-channel conversation and native-delegation overrides."""
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    system_prompt: Optional[str] = None
+    delegation: Optional[ChannelDelegationOverride] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {k: v for k, v in asdict(self).items() if v is not None}
+        if self.delegation is not None:
+            result["delegation"] = self.delegation.to_dict()
+        return result
+
+    @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
-        return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
+        if not data:
+            return cls()
+        values = {f.name: data.get(f.name) for f in fields(cls)}
+        raw_delegation = values["delegation"]
+        values["delegation"] = (
+            ChannelDelegationOverride.from_dict(raw_delegation) if isinstance(raw_delegation, dict) else None
+        )
+        return cls(**values)
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token
