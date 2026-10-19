@@ -752,6 +752,8 @@ class ClientLifecycleMixin:
         latter resolve to ``provider="custom"`` with no registry entry, so they are matched through the
         runtime provider's config lookup instead.
         """
+        if getattr(getattr(self, "_credential_pool", None), "channel_pinned", False) is True:
+            return False
         if self.api_mode != "chat_completions" or getattr(self, "_fallback_activated", False):
             return False
         resolved = self._resolve_env_credentials()
@@ -952,6 +954,9 @@ class ClientLifecycleMixin:
         """Adopt *entry* as the live credential. Returns False, changing nothing, when the entry's
         route cannot serve this conversation's model (a conversation's model is never rewritten by a
         rotation; the caller treats a refused swap as "no entry")."""
+        pool = getattr(self, "_credential_pool", None)
+        if getattr(pool, "channel_pinned", False) is True and not pool.accepts(entry):
+            return False
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
         from hermes_cli.providers import is_actual_route

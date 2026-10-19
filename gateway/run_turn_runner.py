@@ -1146,6 +1146,9 @@ class TurnRunner:
         cache_keys = runner._extract_cache_busting_config(ctx.user_config)
         if channel_delegation := delegation_scope_key():
             cache_keys["channel.delegation"] = channel_delegation
+        pool = turn_route["runtime"].get("credential_pool")
+        if getattr(pool, "channel_pinned", False) is True:
+            cache_keys["channel.credentials"] = pool.coordinator.signature
         sig = runner._agent_config_signature(
             turn_route["model"], turn_route["runtime"], ctx.enabled_toolsets, combined_ephemeral,
             cache_keys=cache_keys,
@@ -1896,11 +1899,12 @@ class TurnRunner:
 
     def run_sync(self):
         """Scope child routing and limits before constructing the agent's frozen tool schemas."""
-        from gateway.channel_delegation import delegation_for_source
+        from gateway.channel_delegation import delegation_for_source, scoped_source_credentials
         from tools.delegation_scope import scoped_channel_delegation
 
         delegation = delegation_for_source(getattr(self._runner, "config", None), self._ctx.source)
-        with scoped_channel_delegation(delegation):
+        with scoped_source_credentials(getattr(self._runner, "config", None), self._ctx.source), \
+                scoped_channel_delegation(delegation):
             return self._run_sync()
 
     def _run_sync(self):
@@ -1943,6 +1947,9 @@ class TurnRunner:
             # Model/credential resolution failed before the turn began; the raw text (URLs, status
             # codes) belongs in the log, and the chat gets the commands that fix it.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            from agent.channel_credentials import ChannelCredentialUnavailable
+            if isinstance(exc, ChannelCredentialUnavailable):
+                return {"final_response": str(exc), "messages": [], "api_calls": 0, "tools": []}
             from hermes_cli.auth import is_rate_limited_auth_error
             if is_rate_limited_auth_error(exc.__cause__):
                 # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).

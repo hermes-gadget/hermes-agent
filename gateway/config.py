@@ -357,6 +357,7 @@ class ChannelDelegationOverride:
     model: Optional[str] = None
     provider: Optional[str] = None
     max_concurrent_children: Optional[int] = None
+    max_spawn_depth: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -367,12 +368,28 @@ class ChannelDelegationOverride:
 
 
 @dataclass
+class ChannelCredentialOverride:
+    main: Optional[str] = None
+    subagents: Optional[List[str]] = None
+    allow_exhausted_free_models: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ChannelCredentialOverride":
+        return cls(**{f.name: data[f.name] for f in fields(cls) if f.name in data})
+
+
+@dataclass
 class ChannelOverride:
     """Per-channel conversation and native-delegation overrides."""
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
     delegation: Optional[ChannelDelegationOverride] = None
+    credentials: Optional[ChannelCredentialOverride] = None
+    fallback_providers: Optional[List[Dict[str, Any]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {k: v for k, v in asdict(self).items() if v is not None}
@@ -388,6 +405,10 @@ class ChannelOverride:
         raw_delegation = values["delegation"]
         values["delegation"] = (
             ChannelDelegationOverride.from_dict(raw_delegation) if isinstance(raw_delegation, dict) else None
+        )
+        raw_credentials = values["credentials"]
+        values["credentials"] = (
+            ChannelCredentialOverride.from_dict(raw_credentials) if isinstance(raw_credentials, dict) else None
         )
         return cls(**values)
 

@@ -2469,6 +2469,8 @@ def init_agent(
     _init_turn_state(agent, run_budget_seconds)
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
+    if getattr(credential_pool, "channel_pinned", False) is True:
+        fallback_model = []
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)

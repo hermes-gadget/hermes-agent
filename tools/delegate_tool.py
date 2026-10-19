@@ -223,6 +223,11 @@ def _build_child_agent(
         override_acp_args=override_acp_args,
         routing_cfg=routing_cfg,
     )
+    from agent.channel_credentials import ChannelCredentialPool
+    parent_pool = getattr(parent_agent, "_credential_pool", None)
+    channel_pool = parent_pool.coordinator.worker_pool() if isinstance(parent_pool, ChannelCredentialPool) else None
+    if channel_pool is not None:
+        rt.update(credential_pool=channel_pool, api_key="channel-credential-pending", fallback_model=[])
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
         # _resolve_delegation_credentials already merged OVER the parent's
@@ -276,7 +281,7 @@ def _build_child_agent(
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
     # Shared pool lets children rotate credentials on rate limits.
-    child_pool = _resolve_child_credential_pool(
+    child_pool = channel_pool or _resolve_child_credential_pool(
         rt["provider"], parent_agent, rt["base_url"], effective_requested_provider=rt.get("requested_provider"),
     )
     if child_pool is not None:
@@ -297,6 +302,29 @@ def _build_child_agent(
     return child
 
 def _run_single_child(
+    task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
+    owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
+) -> Dict[str, Any]:
+    from agent.channel_credentials import ChannelCredentialPool, worker_credentials
+    if not isinstance(getattr(child, "_credential_pool", None), ChannelCredentialPool):
+        return _run_single_child_bound(
+            task_index, goal, child, parent_agent, owner_session_id=owner_session_id,
+            owner_transport=owner_transport, owner_session_record=owner_session_record, **_kwargs,
+        )
+    try:
+        with worker_credentials(child):
+            return _run_single_child_bound(
+                task_index, goal, child, parent_agent, owner_session_id=owner_session_id,
+                owner_transport=owner_transport, owner_session_record=owner_session_record, **_kwargs,
+            )
+    except Exception as exc:
+        from tools.delegate_tool_child_run import _detach_child
+        _detach_child(parent_agent, child)
+        child.close()
+        return _fabricated_entry(task_index, "error", str(exc), child, 0)
+
+
+def _run_single_child_bound(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
     owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
 ) -> Dict[str, Any]:
@@ -474,6 +502,8 @@ def delegate_task(
     background = is_truthy_value(background, default=False) if background is not None else False
 
     depth = getattr(parent_agent, "_delegate_depth", 0)
+    if depth and getattr(getattr(parent_agent, "_credential_pool", None), "channel_pinned", False) is True:
+        return tool_error("Reserved channel workers cannot create nested subagents. Complete this task directly.")
     max_spawn = _get_max_spawn_depth()
     if depth >= max_spawn:
         return tool_error(

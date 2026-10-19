@@ -7,7 +7,7 @@ from typing import Any, Iterator, Mapping
 from utils import is_truthy_value
 
 
-_CHANNEL_KEYS = ("enabled", "model", "provider", "max_concurrent_children")
+_CHANNEL_KEYS = ("enabled", "model", "provider", "max_concurrent_children", "max_spawn_depth")
 _channel_delegation: ContextVar[dict[str, Any] | None] = ContextVar("channel_delegation", default=None)
 
 
