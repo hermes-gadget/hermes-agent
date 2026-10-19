@@ -371,6 +371,7 @@ class ChannelDelegationOverride:
 class ChannelCredentialOverride:
     main: Optional[str] = None
     subagents: Optional[List[str]] = None
+    fallbacks: Optional[List[str]] = None
     allow_exhausted_free_models: bool = False
 
     def to_dict(self) -> Dict[str, Any]:

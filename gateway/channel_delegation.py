@@ -18,6 +18,8 @@ def credential_coordinator_for_source(config, source):
         return None
     if channel.fallback_providers:
         raise ValueError("Reserved channel credentials cannot be combined with model fallbacks.")
+    if channel.credentials.fallbacks and (channel.delegation is None or channel.delegation.enabled is not False):
+        raise ValueError("Channel key rotation requires delegation.enabled: false.")
     overrides = config.platforms[source.platform].channel_overrides
     key = next(k for k in _channel_override_lookup_keys(source.chat_id or "", **lookup) if k in overrides)
     return coordinator_for((source.platform.value, key), channel.provider, channel.model, channel.credentials.to_dict())

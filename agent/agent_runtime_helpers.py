@@ -902,6 +902,9 @@ def recover_with_credential_pool(
 
     def _rotate_and_swap(default_status: int, label: str) -> bool:
         """Rotate away from the failed credential; True when a new entry was swapped in."""
+        rotating_channel = getattr(pool, "rotate_on_rate_limit", False) is True
+        if rotating_channel:
+            pool.begin_turn(getattr(agent, "_relay_pending_turn_id", None))
         rotate_status = status_code if status_code is not None else default_status
         kwargs = {
             "status_code": rotate_status,
@@ -938,9 +941,13 @@ def recover_with_credential_pool(
             rotate_status, label, getattr(next_entry, "id", "?"),
         )
         swapped = agent._swap_credential(next_entry) is not False
+        if swapped and rotating_channel:
+            from agent.agent_init import _snapshot_primary_runtime
+            _snapshot_primary_runtime(agent)
         benched = next((e for e in pool.entries() if e.id == credential_id), None) if credential_id else None
         if (
             swapped
+            and not rotating_channel
             and benched is not None
             and benched.priority < getattr(next_entry, "priority", benched.priority)
             and not getattr(agent, "_credential_pool_revert_id", None)
@@ -955,6 +962,9 @@ def recover_with_credential_pool(
             # rotations — it is the preferred one. Auth benches are not windows; they stay.
             agent._credential_pool_revert_id = credential_id
         return swapped
+    if (getattr(pool, "rotate_on_rate_limit", False) is True
+            and effective_reason in (FailoverReason.rate_limit, FailoverReason.upstream_rate_limit)):
+        return (True, False) if _rotate_and_swap(429, "channel rate limit") else (False, True)
     if effective_reason == FailoverReason.upstream_rate_limit:
         # Upstream (e.g. DeepSeek behind OpenRouter) is throttling the aggregator; the credential is
         # healthy. Do not rotate/exhaust; let fallback switch models.
