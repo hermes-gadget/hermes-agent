@@ -766,6 +766,14 @@ class GatewayTurnHygieneMixin:
     async def _hmwa_run_session_hygiene(
         self, event, source, session_entry, session_key, history, _quick_key, run_generation,
     ):
+        from gateway.channel_delegation import scoped_source_credentials
+        with scoped_source_credentials(getattr(self, "config", None), source):
+            return await self._hmwa_run_session_hygiene_inner(
+                event, source, session_entry, session_key, history, _quick_key, run_generation)
+
+    async def _hmwa_run_session_hygiene_inner(
+        self, event, source, session_entry, session_key, history, _quick_key, run_generation,
+    ):
         """Auto-compress pathologically large transcripts before the agent starts so oversized
         histories don't cause repeated truncation/context failures. Token source: the API's
         prompt_tokens from the last turn, else a char/4 estimate."""

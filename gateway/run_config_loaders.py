@@ -630,6 +630,8 @@ class GatewayConfigLoadersMixin:
         """
         if agent is None:
             return
+        if getattr(getattr(agent, "_credential_pool", None), "channel_pinned", False) is True:
+            chain = []
         new_chain = list(chain or [])
         rate_limited_until = getattr(agent, "_rate_limited_until", 0) or 0
         if getattr(agent, "_fallback_activated", False) and rate_limited_until > time.monotonic():

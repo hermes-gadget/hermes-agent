@@ -143,6 +143,9 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
     from hermes_state_runtime import RuntimeStoreError
     auth_permanent = FailoverReason.auth_permanent.value
+    from agent.channel_credentials import ChannelCredentialUnavailable
+    if isinstance(exc, ChannelCredentialUnavailable):
+        return str(exc), auth_permanent, False
     if isinstance(exc, LocalRuntimeUnavailableError):
         # The chosen model is configured; its local server is down. Not a credential verdict, so
         # the client must not offer "Update API key" or sign-in: the sentence names the fix.
@@ -1223,8 +1226,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 if result is None:
                     raise
             else:
-                from gateway.channel_delegation import delegation_for_source
+                from gateway.channel_delegation import delegation_for_source, scoped_source_credentials
                 from tools.delegation_scope import scoped_channel_delegation
+                scope.enter_context(scoped_source_credentials(
+                    getattr(self._runner, "config", None), self._ctx.source))
                 scope.enter_context(scoped_channel_delegation(
                     delegation_for_source(getattr(self._runner, "config", None), self._ctx.source)))
                 scope.enter_context(api_policy_scope())

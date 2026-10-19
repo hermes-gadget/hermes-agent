@@ -1,9 +1,35 @@
 """Resolve native-delegation settings with the gateway's channel/thread precedence."""
 
 import logging
+from contextlib import contextmanager
 
 
 logger = logging.getLogger(__name__)
+
+
+def credential_coordinator_for_source(config, source):
+    from agent.channel_credentials import coordinator_for
+    from gateway.run import _channel_override_lookup_keys, _get_channel_override
+
+    if config is None or source is None:
+        return None
+    lookup = dict(thread_id=getattr(source, "thread_id", None), parent_id=getattr(source, "parent_chat_id", None))
+    channel = _get_channel_override(config, source.platform, source.chat_id or "", **lookup)
+    if channel is None or channel.credentials is None:
+        return None
+    if channel.fallback_providers:
+        raise ValueError("Reserved channel credentials cannot be combined with model fallbacks.")
+    overrides = config.platforms[source.platform].channel_overrides
+    key = next(k for k in _channel_override_lookup_keys(source.chat_id or "", **lookup) if k in overrides)
+    return coordinator_for((source.platform.value, key), channel.provider, channel.model, channel.credentials.to_dict())
+
+
+@contextmanager
+def scoped_source_credentials(config, source):
+    from agent.channel_credentials import scoped_channel_credentials
+
+    with scoped_channel_credentials(credential_coordinator_for_source(config, source)):
+        yield
 
 
 def delegation_for_source(config, source):

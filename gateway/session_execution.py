@@ -198,6 +198,9 @@ class GatewaySessionAgentMixin:
         cache_keys = runner._extract_cache_busting_config(ctx.user_config)
         if channel_delegation := delegation_scope_key():
             cache_keys["channel.delegation"] = channel_delegation
+        pool = turn_route["runtime"].get("credential_pool")
+        if getattr(pool, "channel_pinned", False) is True:
+            cache_keys["channel.credentials"] = pool.coordinator.signature
         sig = runner._agent_config_signature(
             turn_route["model"], turn_route["runtime"], ctx.enabled_toolsets, combined_ephemeral,
             cache_keys=cache_keys,

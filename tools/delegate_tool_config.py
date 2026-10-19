@@ -482,6 +482,15 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
+    from agent.channel_credentials import ChannelCredentialPool
+    parent_pool = getattr(parent_agent, "_credential_pool", None)
+    if isinstance(parent_pool, ChannelCredentialPool):
+        if cfg.get("model") not in (None, "", parent_pool.model) or cfg.get("provider") not in (None, "", parent_pool.provider):
+            raise ValueError("Reserved channel subagents must use the channel's LongCat route.")
+        return _credential_bundle(
+            parent_pool.model, parent_pool.provider, parent_agent.base_url,
+            parent_agent.api_key, parent_agent.api_mode, dict(getattr(parent_agent, "request_overrides", {}) or {}),
+        )
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None

@@ -26,11 +26,11 @@ class GatewayBackgroundMixin:
         media_types: Optional[list[str]] = None,
     ) -> None:
         """Profile-scoping wrapper around the background agent task (mirrors ``_run_agent``)."""
-        from gateway.channel_delegation import delegation_for_source
+        from gateway.channel_delegation import delegation_for_source, scoped_source_credentials
         from tools.delegation_scope import scoped_channel_delegation
 
         with self._profile_scope_for_source(source):
-            with scoped_channel_delegation(delegation_for_source(getattr(self, "config", None), source)):
+            with scoped_source_credentials(getattr(self, "config", None), source), scoped_channel_delegation(delegation_for_source(getattr(self, "config", None), source)):
                 return await self._run_background_task_inner(
                     prompt, source, task_id, event_message_id, media_urls, media_types,
                 )

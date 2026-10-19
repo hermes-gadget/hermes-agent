@@ -500,6 +500,9 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     profile scope: a lease may refresh that profile's OAuth entries, and ``_swap_credential`` re-reads TLS/header
     config for the bound endpoint."""
     child_pool = getattr(child, "_credential_pool", None)
+    if getattr(child_pool, "channel_pinned", False) is True:
+        # The channel reservation spans this entire run and any deferred exit.
+        return None, None
     if child_pool is None:
         return None, None
     from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
@@ -938,6 +941,8 @@ class _ChildRun:
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
+        if getattr(getattr(child, "_credential_pool", None), "channel_pinned", False) is True:
+            child._channel_credential_future = future
         # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.
         # Without the second, a worker wedged after its final answer holds a finite (-Q / Bot Chat
         # one-shot) turn — and its session lease — forever, since that runtime has no gateway

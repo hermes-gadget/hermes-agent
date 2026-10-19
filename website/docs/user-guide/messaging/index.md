@@ -353,6 +353,32 @@ Details:
 - Native `delegate_task` subagents use the global `delegation` settings by default. A channel's nested `delegation` block can override `model`, `provider`, and `max_concurrent_children` for that channel and its threads, including background and nested children. Other delegation settings stay global; external agents such as Codex or ACP processes retain their own model selection.
 - Set `delegation.enabled: false` in a channel override to remove `delegate_task` from that channel and its threads and reject new native subagent spawns, including calls from existing conversation history. Other channels retain their delegation settings.
 
+### Reserved keys for a free-model channel
+
+An OpenCode Go channel using `longcat-2.5-preview-free` can pin its main inference key and reserve separate keys for native subagents. Credential values stay in the auth store; the override references existing credential labels or IDs:
+
+```yaml
+channel_overrides:
+  "123456789012345678":
+    model: longcat-2.5-preview-free
+    provider: opencode-go
+    fallback_providers: []
+    credentials:
+      main: opencode-main
+      subagents: [opencode-gadget, opencode-proton, opencode-tracker]
+      allow_exhausted_free_models: true
+    delegation:
+      enabled: true
+      model: longcat-2.5-preview-free
+      provider: opencode-go
+      max_concurrent_children: 3
+      max_spawn_depth: 1
+```
+
+The reservation coordinator is shared across the channel's turns, threads and background batches. A child waits until a worker key is free; it never borrows the main key or an occupied sibling key. Cancellation stops queued children, and a timed-out child retains its reservation until its actual worker exits. Keep delegation flat (`max_spawn_depth: 1`) so workers do not wait for descendants while holding every key.
+
+Main and child inference have no model fallback, including when cached agents refresh their fallback configuration. Only a known `GoUsageLimitError` paid-usage exhaustion can be ignored for this explicitly supported free model; invalid credentials, model cooldowns and actual throttles remain binding, and the shared paid-usage state is preserved. Auxiliary inference in this channel uses `deepseek-v4.1-flash` on OpenCode Go without switching to another model. Other channels keep their existing routing and can still use the shared credentials; channel reservations do not guarantee independent upstream capacity.
+
 ## Per-Room Intentional Silence
 
 In multi-agent rooms, a model may choose to end its turn with an explicit silence marker such as

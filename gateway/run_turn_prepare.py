@@ -114,6 +114,19 @@ class GatewayTurnPrepareMixin:
         if policy is not None:
             return _resolve_policy_agent_runtime(self, policy, fallback=fallback)
         skey = self._resolve_session_key_or_none(source, session_key)
+        from gateway.channel_delegation import credential_coordinator_for_source
+        coordinator = credential_coordinator_for_source(getattr(self, "config", None), source)
+        if coordinator is not None:
+            # Resolve before the paid default route, which may be exhausted.
+            # A session /model command cannot escape an explicitly reserved route.
+            state = self._peek_session_state(skey) if skey else None
+            override = state.conversation.model_override if state else None
+            if override and (override.get("model", coordinator.model) != coordinator.model
+                             or override.get("provider", coordinator.provider) != coordinator.provider):
+                raise ValueError("This channel is pinned to LongCat on OpenCode Go and has no model fallback.")
+            from gateway.run import _runtime_agent_kwargs
+            runtime = coordinator.main_pool().runtime()
+            return coordinator.model, _runtime_agent_kwargs(runtime)
         model = _resolve_gateway_model(user_config)
         if skey:
             self._rehydrate_session_model_override(skey)
