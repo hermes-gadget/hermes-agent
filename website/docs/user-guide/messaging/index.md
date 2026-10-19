@@ -336,6 +336,10 @@ platforms:
         model: anthropic/claude-sonnet-4.6
         provider: anthropic
         system_prompt: "You are the #dev channel code-review specialist."
+        delegation:
+          model: anthropic/claude-sonnet-4.6
+          provider: anthropic
+          max_concurrent_children: 8
       "987654321098765432":
         model: openai/gpt-5-mini
 ```
@@ -346,6 +350,7 @@ Details:
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+- Native `delegate_task` subagents use the global `delegation` settings by default. A channel's nested `delegation` block can override `model`, `provider`, and `max_concurrent_children` for that channel and its threads, including background and nested children. Other delegation settings stay global; external agents such as Codex or ACP processes retain their own model selection.
 
 ## Per-Room Intentional Silence
 
