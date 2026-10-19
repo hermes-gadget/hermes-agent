@@ -48,11 +48,20 @@ class OpenCodeGoProfile(ProviderProfile):
 
     # The relay's default max_tokens (262144) exceeds what Xiaomi accepts for
     # mimo-v2.5-pro and 400s; keys are normalized via _flat_model_name().
-    _MODEL_MAX_TOKENS: dict[str, int] = {"mimo-v2.5-pro": 131072}
+    # LongCat's default can exhaust reasoning before producing a visible answer;
+    # explicitly request its full supported output allowance, keeping thinking on.
+    # https://longcat.chat/platform/docs/api/model-params
+    _MODEL_MAX_TOKENS: dict[str, int] = {
+        "mimo-v2.5-pro": 131072,
+        "longcat-2.5-preview-free": 262144,
+    }
 
     def get_max_tokens(self, model: str | None) -> int | None:
         cap = self._MODEL_MAX_TOKENS.get(_flat_model_name(model))
         return self.default_max_tokens if cap is None else cap
+
+    def get_max_output_tokens(self, model: str | None) -> int | None:
+        return self._MODEL_MAX_TOKENS.get(_flat_model_name(model))
 
     def fetch_account_usage(self, *, base_url: str | None = None, api_key: str | None = None):
         """Go subscription windows for /usage via ``/zen/go/v1/usage`` (anomalyco/opencode#16513).
