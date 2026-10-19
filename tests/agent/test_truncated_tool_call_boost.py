@@ -69,3 +69,16 @@ def test_boost_clamped_to_known_model_output_limit(site):
 
 def test_small_explicit_max_tokens_ladder_still_capped_at_floor():
     assert _tool_call_budgets(_agent(4096, None)) == [8192, 16384, 32768, 32768]
+
+
+@pytest.mark.parametrize("site", SITES)
+def test_opencode_go_retries_respect_the_longcat_output_ceiling(site):
+    from providers import get_provider_profile
+
+    limit = get_provider_profile("opencode-go").get_max_output_tokens("longcat-2.5-preview-free")
+    assert limit is not None
+    for requested in (limit // 2, limit, limit * 2):
+        budgets = site(_agent(None, requested, provider="opencode-go",
+                              api_mode="chat_completions", model="longcat-2.5-preview-free"))
+        assert all(0 < budget <= limit for budget in budgets)
+        assert all(budget >= min(requested, limit) for budget in budgets)

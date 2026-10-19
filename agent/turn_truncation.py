@@ -367,6 +367,15 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
 
 def _model_output_limit(agent: Any) -> Optional[int]:
     """The model's real max output tokens when Hermes knows it, else None."""
+    provider = getattr(agent, "provider", None)
+    if provider:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        if profile:
+            limit = profile.get_max_output_tokens(getattr(agent, "model", None))
+            if limit:
+                return limit
     if getattr(agent, "api_mode", None) != "anthropic_messages":
         return None
     # Local: only Anthropic-Messages turns need the adapter module.
@@ -387,7 +396,7 @@ def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int, base: O
     anchor = requested_cap or base
     limit = _model_output_limit(agent)
     if limit and anchor >= limit:
-        return anchor  # already at the model ceiling: doubling cannot help
+        return limit  # already at the model ceiling: doubling cannot help
     boost = min(max(base * (2 ** n), requested_cap or 0), max(32768, anchor * 2))
     return min(boost, limit) if limit else boost
 

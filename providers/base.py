@@ -276,6 +276,14 @@ class ProviderProfile:
         """
         return self.default_max_tokens
 
+    def get_max_output_tokens(self, model: str | None) -> int | None:
+        """Known hard output limit, used to bound truncation retries.
+
+        Unlike ``get_max_tokens`` (the request default), this must return None
+        unless the provider knows the model's actual supported ceiling.
+        """
+        return None
+
     def supported_reasoning_efforts(
         self, model: str | None
     ) -> tuple[str, ...] | None:
