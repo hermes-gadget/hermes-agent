@@ -339,6 +339,9 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+    from tools.delegation_scope import channel_delegation_enabled
+    if not channel_delegation_enabled():
+        tools.discard("delegate_task")
     return tools
 
 

@@ -18,8 +18,9 @@ def delegation_for_source(config, source):
     delegation = channel.delegation.to_dict() if channel and channel.delegation else None
     if delegation:
         logger.debug(
-            "Channel delegation override: platform=%s channel=%s model=%s provider=%s max_concurrent_children=%s",
-            source.platform.value, source.chat_id, delegation.get("model"), delegation.get("provider"),
-            delegation.get("max_concurrent_children"),
+            "Channel delegation override: platform=%s channel=%s enabled=%s model=%s "
+            "provider=%s max_concurrent_children=%s",
+            source.platform.value, source.chat_id, delegation.get("enabled", True),
+            delegation.get("model"), delegation.get("provider"), delegation.get("max_concurrent_children"),
         )
     return delegation

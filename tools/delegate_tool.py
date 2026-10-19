@@ -457,6 +457,10 @@ def delegate_task(
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
 
+    from tools.delegation_scope import channel_delegation_enabled
+    if not channel_delegation_enabled():
+        return tool_error("Native subagents are disabled in this channel. Complete the task directly.")
+
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
         return tool_error(

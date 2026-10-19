@@ -4,8 +4,10 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator, Mapping
 
+from utils import is_truthy_value
 
-_CHANNEL_KEYS = ("model", "provider", "max_concurrent_children")
+
+_CHANNEL_KEYS = ("enabled", "model", "provider", "max_concurrent_children")
 _channel_delegation: ContextVar[dict[str, Any] | None] = ContextVar("channel_delegation", default=None)
 
 
@@ -23,6 +25,11 @@ def scoped_channel_delegation(overrides: Mapping[str, Any] | None) -> Iterator[N
 def delegation_scope_key() -> tuple:
     """Include channel settings in caches that freeze the delegate tool schema."""
     return tuple(sorted((k, str(v)) for k, v in (_channel_delegation.get() or {}).items()))
+
+
+def channel_delegation_enabled() -> bool:
+    """Channel policy applies to tool selection and to calls from existing history."""
+    return is_truthy_value((_channel_delegation.get() or {}).get("enabled"), default=True)
 
 
 def apply_channel_delegation(config: dict) -> dict:
