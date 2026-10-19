@@ -25,11 +25,13 @@ def coordinator_for(channel_key, provider, model, policy):
     if provider != "opencode-go" or model not in _FREE_MODELS:
         raise ValueError("Channel credential reservations require OpenCode Go LongCat 2.5 Preview Free.")
     main = str(policy.get("main") or "").strip()
-    workers = policy.get("subagents")
-    if not main or not isinstance(workers, list) or not workers or any(not isinstance(v, str) or not v.strip() for v in workers):
-        raise ValueError("Channel credentials require a main credential and a nonempty subagents label list.")
-    workers = tuple(v.strip() for v in workers)
-    signature = (main, workers, is_truthy_value(policy.get("allow_exhausted_free_models")), model)
+    workers, fallbacks = policy.get("subagents") or [], policy.get("fallbacks") or []
+    if (not main or not isinstance(workers, list) or not isinstance(fallbacks, list)
+            or not (workers or fallbacks) or (workers and fallbacks)
+            or any(not isinstance(v, str) or not v.strip() for v in (*workers, *fallbacks))):
+        raise ValueError("Channel credentials require a main key and either subagent keys or fallback keys.")
+    workers, fallbacks = tuple(v.strip() for v in workers), tuple(v.strip() for v in fallbacks)
+    signature = (main, workers, is_truthy_value(policy.get("allow_exhausted_free_models")), model, fallbacks)
     key = (hermes_home_key(), channel_key, provider)
     with _coordinators_lock:
         current = _coordinators.get(key)
@@ -44,7 +46,8 @@ def coordinator_for(channel_key, provider, model, policy):
 class _Coordinator:
     def __init__(self, provider, signature):
         self.provider, self.signature = provider, signature
-        self.main, self.workers, self.allow_exhausted, self.model = signature
+        self.main, self.workers, self.allow_exhausted, self.model, self.fallbacks = signature
+        self.main_label = self.main
         self.condition = threading.Condition(threading.RLock())
         self.leases = set()
 
@@ -57,15 +60,15 @@ class _Coordinator:
 
         entries = load_pool(self.provider).entries()
         selected = {}
-        for label in (self.main, *self.workers):
+        for label in (self.main, *self.workers, *self.fallbacks):
             matches = [e for e in entries if e.id == label or e.label == label]
             if (len(matches) != 1 or not matches[0].runtime_api_key
                     or matches[0].auth_type != "api_key"):
                 raise ValueError(f"Channel credential '{label}' is missing, ambiguous, or empty.")
             selected[label] = matches[0]
         values = list(selected.values())
-        if len(selected) != 1 + len(self.workers) or len({e.runtime_api_key for e in values}) != len(values):
-            raise ValueError("Main and subagent channel credentials must all be distinct keys.")
+        if len(selected) != 1 + len(self.workers) + len(self.fallbacks) or len({e.runtime_api_key for e in values}) != len(values):
+            raise ValueError("Channel credentials must all be distinct keys.")
         return selected
 
     def blocked_until(self, entry):
@@ -85,6 +88,8 @@ class _Coordinator:
         return until
 
     def main_pool(self):
+        if self.fallbacks:
+            return RotatingChannelCredentialPool(self, self.main_label)
         return ChannelCredentialPool(self, self.main)
 
     def worker_pool(self):
@@ -222,7 +227,7 @@ class ChannelCredentialPool:
         entry = self.select(model=self.model)
         if entry is None:
             raise ChannelCredentialUnavailable(
-                "This channel's pinned LongCat key is currently unavailable. "
+                "This channel's LongCat credentials are currently unavailable. "
                 "No fallback model is configured; retry later."
             )
         runtime = resolve_runtime_provider(
@@ -230,13 +235,103 @@ class ChannelCredentialPool:
             explicit_base_url=entry.runtime_base_url,
         )
         runtime["credential_pool"] = self
-        logger.info("Channel main credential pinned: label=%s model=%s", self.label, self.model)
+        logger.info("Channel main credential selected: label=%s model=%s", self.label, self.model)
         return runtime
 
     def release(self):
         if self.lease_id is not None:
             self.coordinator.release(self.lease_id)
             self.lease_id = None
+
+
+class RotatingChannelCredentialPool(ChannelCredentialPool):
+    """Same-model key failover for a channel without native children."""
+
+    rotate_on_rate_limit = True
+
+    def __init__(self, coordinator, label):
+        super().__init__(coordinator, label)
+        self._tried = set()
+        self._turn_id = None
+
+    def begin_turn(self, turn_id):
+        if turn_id != self._turn_id:
+            self._turn_id = turn_id
+            self._tried.clear()
+
+    def entries(self):
+        return list(self.coordinator.entries().values())
+
+    def current(self):
+        return self.coordinator.entries().get(self.label)
+
+    def accepts(self, entry):
+        return any(e.id == getattr(entry, "id", None) for e in self.entries())
+
+    def _choose(self, *, advance=False, exclude=()):
+        with self.coordinator.condition:
+            entries = self.coordinator.entries()
+            labels = list(entries)
+            start = labels.index(self.label) + int(advance)
+            for offset in range(len(labels)):
+                label = labels[(start + offset) % len(labels)]
+                entry = entries[label]
+                if entry.id not in exclude and self.coordinator.blocked_until(entry) <= time.time():
+                    self.label = self.coordinator.main_label = label
+                    return entry
+        return None
+
+    def select(self, *, model=None):
+        return None if model and model != self.model else self._choose()
+
+    def next_available_at(self, *, model=None):
+        if model and model != self.model:
+            return None
+        deadlines = [self.coordinator.blocked_until(e) for e in self.entries()]
+        if any(v <= time.time() for v in deadlines):
+            return None
+        finite = [v for v in deadlines if time.time() < v < float("inf")]
+        return min(finite, default=None)
+
+    def reclaim(self, credential_id, *, model=None):
+        if model and model != self.model:
+            return None
+        with self.coordinator.condition:
+            for label, entry in self.coordinator.entries().items():
+                if entry.id == credential_id and self.coordinator.blocked_until(entry) <= time.time():
+                    self.label = self.coordinator.main_label = label
+                    return entry
+        return None
+
+    def mark_exhausted_and_rotate(self, **kwargs):
+        # Attribute failures to the dispatched key, even if another availability
+        # check changed the selection pointer while its request was in flight.
+        entries = self.coordinator.entries()
+        credential_id, api_key = kwargs.get("credential_id"), kwargs.get("api_key_hint")
+        failed = next(((label, entry) for label, entry in entries.items()
+                       if (credential_id and entry.id == credential_id)
+                       or (api_key and entry.runtime_api_key == api_key)), None)
+        if (credential_id or api_key) and failed is None:
+            return None
+        if failed is not None:
+            self.label = failed[0]
+        entry = self.current()
+        self._tried.add(entry.id)
+        previous = self.label
+        super().mark_exhausted_and_rotate(**kwargs)
+        next_entry = self._choose(advance=True, exclude=self._tried)
+        if next_entry is not None:
+            logger.info("Channel LongCat credential rotated: from=%s to=%s model=%s", previous, self.label, self.model)
+        return next_entry
+
+    def record_success(self, *, api_key):
+        self._tried.clear()
+        with self.coordinator.condition:
+            for label, entry in self.coordinator.entries().items():
+                if entry.runtime_api_key == api_key:
+                    self.label = self.coordinator.main_label = label
+                    break
+        super().record_success(api_key=api_key)
 
 
 @contextmanager

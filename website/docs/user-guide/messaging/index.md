@@ -379,6 +379,26 @@ The reservation coordinator is shared across the channel's turns, threads and ba
 
 Main and child inference have no model fallback, including when cached agents refresh their fallback configuration. Only a known `GoUsageLimitError` paid-usage exhaustion can be ignored for this explicitly supported free model; invalid credentials, model cooldowns and actual throttles remain binding, and the shared paid-usage state is preserved. Transient throttles use a single-key cooldown, which a successful retry clears for that model only. Auxiliary inference uses the shared `auxiliary` configuration, fallback chains and credential rotation, just like other channels. The channel reservations affect only the main LLM and native delegates. Other channels keep their existing routing and can still use the shared credentials; channel reservations do not guarantee independent upstream capacity.
 
+### Single agent key rotation
+
+To run one LongCat agent without subagents, replace `credentials.subagents` with `credentials.fallbacks` and disable delegation:
+
+```yaml
+channel_overrides:
+  "123456789012345678":
+    model: longcat-2.5-preview-free
+    provider: opencode-go
+    fallback_providers: []
+    credentials:
+      main: opencode-main
+      fallbacks: [opencode-gadget, opencode-proton, opencode-tracker]
+      allow_exhausted_free_models: true
+    delegation:
+      enabled: false
+```
+
+A 429 switches to the next available credential immediately, including upstream 429s. Retries keep the same provider and LongCat model. Each failed key is tried once per unsuccessful request before normal error handling resumes; cooling or invalid keys are skipped. Successful requests keep the selected key for later turns. The shared auxiliary configuration and its credential rotation remain unchanged.
+
 ## Per-Room Intentional Silence
 
 In multi-agent rooms, a model may choose to end its turn with an explicit silence marker such as
