@@ -240,9 +240,18 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
     task_provider, task_model, task_base_url, task_api_key = (
         str(task.get(key, "")).strip() or None for key in ("provider", "model", "base_url", "api_key")
     )
-    if not (task_provider and task_provider != "auto" and task_model) or (
+    reserved_parent = getattr(getattr(agent, "_credential_pool", None), "channel_pinned", False) is True
+    if reserved_parent and not (task_provider and task_provider != "auto" and task_model and task_model != "auto"):
+        # A channel's reserved main runtime applies to foreground inference.
+        # Unset review routing follows the shared config and its usual key rotation.
+        from hermes_cli.config import load_config_readonly
+        shared = load_config_readonly().get("model", {})
+        task_provider = shared.get("provider") or "auto"
+        task_model = shared.get("default") or shared.get("model")
+        task_base_url, task_api_key = shared.get("base_url"), shared.get("api_key")
+    if not reserved_parent and (not (task_provider and task_provider != "auto" and task_model) or (
         task_provider == (agent.provider or "") and task_model == (agent.model or "")  # same as parent
-    ):
+    )):
         return parent
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -257,6 +266,8 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
             "args": list(rp.get("args") or []), "routed": True,
         }
     except Exception as e:
+        if reserved_parent:
+            raise  # The main-only reservation is not an auxiliary fallback route.
         _warn_review_routing_fallback(agent, task_provider, task_model, e)
         return parent
 

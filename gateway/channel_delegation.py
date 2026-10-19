@@ -1,7 +1,6 @@
 """Resolve native-delegation settings with the gateway's channel/thread precedence."""
 
 import logging
-from contextlib import contextmanager
 
 
 logger = logging.getLogger(__name__)
@@ -22,14 +21,6 @@ def credential_coordinator_for_source(config, source):
     overrides = config.platforms[source.platform].channel_overrides
     key = next(k for k in _channel_override_lookup_keys(source.chat_id or "", **lookup) if k in overrides)
     return coordinator_for((source.platform.value, key), channel.provider, channel.model, channel.credentials.to_dict())
-
-
-@contextmanager
-def scoped_source_credentials(config, source):
-    from agent.channel_credentials import scoped_channel_credentials
-
-    with scoped_channel_credentials(credential_coordinator_for_source(config, source)):
-        yield
 
 
 def delegation_for_source(config, source):

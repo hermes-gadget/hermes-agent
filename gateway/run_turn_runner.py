@@ -1899,12 +1899,11 @@ class TurnRunner:
 
     def run_sync(self):
         """Scope child routing and limits before constructing the agent's frozen tool schemas."""
-        from gateway.channel_delegation import delegation_for_source, scoped_source_credentials
+        from gateway.channel_delegation import delegation_for_source
         from tools.delegation_scope import scoped_channel_delegation
 
         delegation = delegation_for_source(getattr(self._runner, "config", None), self._ctx.source)
-        with scoped_source_credentials(getattr(self._runner, "config", None), self._ctx.source), \
-                scoped_channel_delegation(delegation):
+        with scoped_channel_delegation(delegation):
             return self._run_sync()
 
     def _run_sync(self):

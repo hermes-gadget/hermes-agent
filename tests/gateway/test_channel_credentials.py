@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import pytest
 from ruamel.yaml import YAML
 
-from agent.channel_credentials import ChannelCredentialUnavailable, auxiliary_route, guard_auxiliary_request, worker_credentials
-from gateway.channel_delegation import credential_coordinator_for_source, delegation_for_source, scoped_source_credentials
+from agent.channel_credentials import ChannelCredentialUnavailable, worker_credentials
+from gateway.channel_delegation import credential_coordinator_for_source, delegation_for_source
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
 from gateway.run_turn import GatewayTurnMixin
@@ -59,14 +59,14 @@ def _setup(tmp_path, monkeypatch, base_url, name="profile"):
 
 def test_channel_real_agents_use_distinct_keys_and_cannot_fall_back(tmp_path, monkeypatch):
     from agent.credential_pool import load_pool
-    from agent.auxiliary_client import _resolve_task_provider_model, _try_configured_fallback_chain
+    from agent.auxiliary_client import _resolve_task_provider_model
     from run_agent import AIAgent
     from tools.delegate_tool import delegate_task
 
     with FakeLLMServer(api_key=[f"profile-{label}" for label in LABELS]) as host:
         home, cfg, config, source = _setup(tmp_path, monkeypatch, host.base_url)
         runner = SimpleNamespace(config=config, _resolve_session_key_or_none=lambda *args: None)
-        with scoped_source_credentials(config, source), scoped_channel_delegation(delegation_for_source(config, source)):
+        with scoped_channel_delegation(delegation_for_source(config, source)):
             model, runtime = GatewayTurnMixin._resolve_session_agent_runtime(runner, source=source, user_config=cfg)
             parent = AIAgent(
                 model=model, **runtime, enabled_toolsets=["delegation"], quiet_mode=True,
@@ -93,12 +93,7 @@ def test_channel_real_agents_use_distinct_keys_and_cannot_fall_back(tmp_path, mo
                 sibling = next(e for e in load_pool("opencode-go").entries() if e.label == "worker-a")
                 assert parent._swap_credential(sibling) is False
                 assert parent._try_refresh_env_client_credentials() is False
-                assert _resolve_task_provider_model("compression")[:2] == ("opencode-go", "deepseek-v4.1-flash")
-                assert _try_configured_fallback_chain("compression", "opencode-go") == (None, None, "")
-                allowed = SimpleNamespace(base_url="https://opencode.ai/zen/go/v1")
-                guard_auxiliary_request(allowed, {"model": "deepseek-v4.1-flash"})
-                with pytest.raises(ValueError, match="only"):
-                    guard_auxiliary_request(allowed, {"model": "paid-backup"})
+                assert _resolve_task_provider_model("compression")[:2] == ("openai-codex", "paid-aux")
                 recovered, _retried = parent._recover_with_credential_pool(
                     status_code=429, has_retried_429=True, error_context={"message": "Endpoint unavailable"})
                 assert recovered is False
@@ -108,7 +103,6 @@ def test_channel_real_agents_use_distinct_keys_and_cannot_fall_back(tmp_path, mo
                     parent._credential_pool.runtime()
             finally:
                 parent.close()
-        assert auxiliary_route() is None
         assert _resolve_task_provider_model("compression")[:2] == ("openai-codex", "paid-aux")
         assert credential_coordinator_for_source(config, SessionSource(platform=Platform.DISCORD, chat_id="ordinary")) is None
         assert not load_pool("opencode-go").has_available(model="deepseek-v4.1-flash")
