@@ -351,6 +351,7 @@ Details:
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 - Native `delegate_task` subagents use the global `delegation` settings by default. A channel's nested `delegation` block can override `model`, `provider`, and `max_concurrent_children` for that channel and its threads, including background and nested children. Other delegation settings stay global; external agents such as Codex or ACP processes retain their own model selection.
+- Set `delegation.enabled: false` in a channel override to remove `delegate_task` from that channel and its threads and reject new native subagent spawns, including calls from existing conversation history. Other channels retain their delegation settings.
 
 ## Per-Room Intentional Silence
 

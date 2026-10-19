@@ -380,7 +380,8 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
 
 @dataclass
 class ChannelDelegationOverride:
-    """Native subagent route and capacity for one channel and its threads."""
+    """Native subagent policy, route and capacity for one channel and its threads."""
+    enabled: Optional[bool] = None
     model: Optional[str] = None
     provider: Optional[str] = None
     max_concurrent_children: Optional[int] = None
