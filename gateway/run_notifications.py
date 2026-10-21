@@ -287,6 +287,19 @@ class GatewayNotificationsMixin:
                 "dropping injection (#55578 fail-closed).", pinned_session_id,
             )
             return None
+        if str(pinned_row.get("created_source") or "") == "subagent":
+            # Subagent sessions inherit the parent chat's routing key; a notification for
+            # the CHILD must never repoint the PARENT route onto it (2026-10-03 live
+            # incident: a verifier's bg-process ping switched the dot DM's route to the
+            # subagent session as "session_switch", stranding the room on a 5-minute
+            # lease wait and dropping the real delegation result). Child notices are
+            # suppressed in the parent — the running child owns its own delivery.
+            logger.info(
+                "Async completion pinned to subagent session %s (parent %s); "
+                "suppressing parent delivery.",
+                pinned_session_id, pinned_row.get("parent_session_id") or "?",
+            )
+            return None
         target_session_id = pinned_session_id
         follows_compression = False
         if pinned_row.get("ended_at"):
