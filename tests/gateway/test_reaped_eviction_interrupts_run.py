@@ -54,7 +54,8 @@ def _build_gateway(agent, events: list[tuple]):
 
 
 @pytest.mark.parametrize("entrypoint", ("direct", "reaped"))
-def test_eviction_interrupts_before_release_and_drops_cached_agent(entrypoint: str) -> None:
+@pytest.mark.asyncio
+async def test_eviction_interrupts_before_release_and_drops_cached_agent(entrypoint: str) -> None:
     events: list[tuple] = []
     gateway = None
 
@@ -73,7 +74,7 @@ def test_eviction_interrupts_before_release_and_drops_cached_agent(entrypoint: s
     gateway._release_running_agent_state = release_with_record
     if entrypoint == "reaped":
         gateway.session_store = _ReapedStore()
-        gateway._hm_evict_reaped_agent(KEY)
+        await gateway._hm_evict_reaped_agent(KEY)
     else:
         gateway._hm_evict_running_agent(KEY, "stale_running_agent_eviction")
 
