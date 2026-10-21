@@ -1280,6 +1280,13 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''',
     re.IGNORECASE)
 
+# LOCAL PATCH (Hermes@Ben, 2026-10-14): leaked provider guardrail verdicts.
+# deepseek routes can emit their internal classifier block as content
+# ("true<ds_safety>[…verdict…]Safe"); it must never reach a chat mid-turn.
+# Same shape as the ds-safety-filter plugin (which covers final responses).
+# No end marker -> no match, so prose ABOUT the token keeps its tail.
+DS_SAFETY_BLOCK_RE = re.compile(r"(?is)\s*(?:true\s*)?<ds_safety>.*?(?:safe\b|</ds_safety>)\s*")
+
 # Extension-less (Caddyfile) / unknown-ext (.py, .log) tags deliver only after
 # ``validate_media_delivery_path`` accepts them, so injected paths that don't validate stay visible.
 # The bare path class is whitespace-bounded (a tag glued to the next ``MEDIA:`` or prose must not
@@ -3310,6 +3317,14 @@ class BasePlatformAdapter(ABC):
         """Strip MEDIA: directives from streamed/display text. Known-extension tags are
         removed unconditionally (as ``MEDIA_TAG_CLEANUP_RE``); extension-less tags only when
         ``validate_media_delivery_path`` accepts the path, so undeliverable paths stay visible."""
+        # LOCAL PATCH (Hermes@Ben, 2026-10-14): leaked provider guardrail verdicts.
+        # deepseek routes can emit their internal classifier block as content
+        # ("true<ds_safety>[…verdict…]Safe"); strip it from everything displayed.
+        # Mirrors the ds-safety-filter plugin (which covers final responses).
+        if "<ds_safety>" in text:
+            text = DS_SAFETY_BLOCK_RE.sub("", text)
+            if not text.strip():
+                return ""
         if not _has_media_directives(text):
             return text
         return re.sub(r'\n{3,}', '\n\n', _strip_media_tag_directives(text)).rstrip()
