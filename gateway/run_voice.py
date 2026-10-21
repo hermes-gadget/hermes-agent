@@ -345,11 +345,14 @@ class GatewayVoiceMixin:
         over a platform limit); legacy single-file results keep working."""
         audio_path, actual_paths = None, []
         try:
+            from gateway.voice_summary import summarize_for_voice
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
             tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
                 return
+            # Voice notes are summaries, not readings (Ben 2026-10-01).
+            tts_text = await summarize_for_voice(tts_text)
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
             # explicit .ogg path; the TTS tool's container repair guarantees real Ogg/Opus bytes.
             audio_path = build_auto_tts_output_path(event.source.platform)

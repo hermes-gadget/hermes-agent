@@ -4150,9 +4150,13 @@ class BasePlatformAdapter(ABC):
             from tools.tts_tool import text_to_speech_tool, check_tts_requirements
             if check_tts_requirements():
                 import json as _json
+                from gateway.voice_summary import summarize_for_voice
                 speech_text = self.prepare_tts_text(text_content)
                 if not speech_text:
                     raise ValueError("Empty text after markdown cleanup")
+                # Voice notes are summaries, not readings (Ben 2026-10-01): condense
+                # long replies before synthesis; the full text still follows in chat.
+                speech_text = await summarize_for_voice(speech_text)
                 requested_path = build_auto_tts_output_path(self.platform)
                 tts_data = _json.loads(await asyncio.to_thread(
                     text_to_speech_tool, text=speech_text, output_path=requested_path))
