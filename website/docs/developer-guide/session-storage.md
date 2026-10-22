@@ -6,6 +6,28 @@ sessions. This replaces the earlier per-session JSONL file approach.
 
 Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
 
+## Turn leases and write contention
+
+`SessionDB._execute_write()` takes `BEGIN IMMEDIATE` before running its callback.
+Its retry patience limits waiting for another writer; it does not limit how long
+the callback holds the WAL write lock. Store-wide discovery should run through
+the read connection, with eligibility and ownership rechecked inside the write
+transaction before making changes.
+
+`sweep_orphaned_sessions()` follows that pattern: it discovers candidates without
+reserving the WAL writer, then closes at most 100 candidates per transaction and
+pauses between batches. Each batch rechecks recency, source, pin and gateway
+heartbeat eligibility, plus the current turn lease and compression lock. A turn
+that starts after discovery is protected. Completed batches stay committed if a
+later batch fails; the next sweep can safely process the remaining candidates.
+
+Session turn lease acquisition and refresh calculate expiry after obtaining the
+write lock, so a successful write grants its full TTL even after contention.
+The agent's existing bounded refresh-error grace handles transient lock errors;
+a holder-qualified UPDATE miss still interrupts immediately, and transcript
+writes independently reject a stale holder in their own transaction. Neither
+the write patience nor the refresh grace is increased by this policy.
+
 ## Hermes home and profile isolation
 
 `get_hermes_home()` is the authoritative filesystem resolver for state and

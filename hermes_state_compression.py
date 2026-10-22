@@ -556,9 +556,12 @@ class SessionCompressionMixin:
         from hermes_state import _compression_lock_holder_process_is_dead
         if not session_id or not holder:
             return False
-        now = time.time()
-        expires_at = now + max(0.1, float(ttl_seconds))
+        ttl_seconds = max(0.1, float(ttl_seconds))
         def _do(conn):
+            # Lock retries can outlast a short TTL. Both reclaim decisions and the new
+            # lease's lifetime start only after BEGIN IMMEDIATE acquired the writer.
+            now = time.time()
+            expires_at = now + ttl_seconds
             # Sweep rows that expired long ago: a holder that died without releasing leaves its row
             # behind, and nothing else revisits a conversation nobody resumes. The grace keeps the
             # recent expiries a still-live owner can renew from a starved refresher; it is also the
@@ -638,12 +641,13 @@ class SessionCompressionMixin:
         """Extend a turn lease only while ``holder`` still owns it."""
         if not session_id or not holder:
             return False
-        expires_at = time.time() + max(0.1, float(ttl_seconds))
+        ttl_seconds = max(0.1, float(ttl_seconds))
         def _do(conn):
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return conn.execute(
                 "UPDATE session_turn_leases SET expires_at = ? "
-                "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
+                "WHERE conversation_id = ? AND holder = ?",
+                (time.time() + ttl_seconds, conversation_id, holder),
             ).rowcount > 0
         return bool(self._execute_write(_do))
 

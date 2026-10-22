@@ -153,9 +153,9 @@ class SessionMaintenanceMixin:
         ``heartbeat_staleness_seconds``, default ``2 * max_idle_seconds``) could own it: B owns S if
         ``B.started_at <= S.started_at + grace`` (default = staleness) — grace covers a migrating backend
         whose sessions predate its first heartbeat, bounded so a PID-reuse respawn cannot protect rows
-        forever.  Disable the gate only for state.db-owned sources.  SELECT, live-lease validation and UPDATE
-        run in one ``BEGIN IMMEDIATE`` transaction; active leases/locks spare the row, expired guards are
-        removed so their owner is fenced.
+        forever.  Disable the gate only for state.db-owned sources.  Discovery uses a read connection;
+        bounded write batches recheck every predicate and live lease before closing rows. Active
+        leases/locks spare the row; expired guards are removed so their owner is fenced.
 
         See #65194.
         ``exclude_pinned`` is intended for broad automatic sweeps; pinned rows remain explicitly
@@ -179,21 +179,36 @@ class SessionMaintenanceMixin:
             heartbeat_params = (now - hb_staleness, hb_grace)
         scope_sql = f" AND source IN ({_placeholders(srcs)}){pin_scope} AND {orphan_predicate}"
         scope_params = (*srcs, cutoff, cutoff, *heartbeat_params)
-        def _do(conn):
-            rows = conn.execute(f"SELECT id FROM sessions WHERE ended_at IS NULL{scope_sql}",
-                                scope_params).fetchall()
-            excluded = {str(x) for x in exclude_ids if x}
-            victims = [sid for sid in (str(row["id"]) for row in rows)
-                       if sid not in excluded and not self._write_guards_reject(conn, sid)]
-            if not victims:
-                return []
-            # Re-apply every predicate under the write lock.
-            conn.execute(
-                f"UPDATE sessions SET ended_at = ?, end_reason = 'startup_orphan_reap'"
-                f" WHERE id IN ({_placeholders(victims)}) AND ended_at IS NULL{scope_sql}",
-                (time.time(), *victims, *scope_params))
-            return victims
-        return self._execute_write(_do) or []
+        # A store-wide scan must not own the WAL writer: even read-only work after
+        # BEGIN IMMEDIATE can starve another process's turn-lease renewal for seconds.
+        excluded = {str(x) for x in exclude_ids if x}
+        candidates = [str(row["id"]) for row in self._read_all(
+            f"SELECT id FROM sessions WHERE ended_at IS NULL{scope_sql}", scope_params)
+            if str(row["id"]) not in excluded]
+        closed: List[str] = []
+        for index, chunk in enumerate(_id_chunks(candidates, size=100)):
+            if index:
+                # Leave other processes a writer slot instead of immediately reacquiring
+                # it for every batch in a large startup backlog.
+                time.sleep(0.05)
+
+            def _do(conn):
+                # Discovery is only a shortlist: a turn, heartbeat, pin or close may
+                # have landed since the read, including between our own batches.
+                rows = conn.execute(
+                    f"SELECT id FROM sessions WHERE id IN ({_placeholders(chunk)})"
+                    f" AND ended_at IS NULL{scope_sql}", (*chunk, *scope_params)).fetchall()
+                victims = [str(row["id"]) for row in rows
+                           if not self._write_guards_reject(conn, str(row["id"]))]
+                if victims:
+                    conn.execute(
+                        f"UPDATE sessions SET ended_at = ?, end_reason = 'startup_orphan_reap'"
+                        f" WHERE id IN ({_placeholders(victims)})",
+                        (time.time(), *victims))
+                return victims
+
+            closed.extend(self._execute_write(_do) or [])
+        return closed
 
     @staticmethod
     def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
