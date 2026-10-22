@@ -1218,7 +1218,9 @@ cronjob(action="create", name="weekly-news-summary",
         prompt="Summarize this week's AI news: ...")
 ```
 
-When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. If the cron-platform toolset config cannot be read at all (for example a malformed `platform_toolsets` block in `config.yaml`), the run fails with a recorded error instead of quietly running with every tool — check `hermes cron list` / `hermes cron doctor`. This matters for cost control: carrying `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. If the cron-platform toolset config cannot be read at all (for example a malformed `platform_toolsets` block in `config.yaml`), the run fails with a recorded error instead of quietly running with every tool — check `hermes cron list` / `hermes cron doctor`. This matters for cost control: carrying `browser` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+
+Agent-mode jobs run in **cron scope**: they receive the job prompt, attached skills, and any explicit workdir context. Ambient standing instructions (memory/profile prompt blocks, persona, plugin prompt sections, global prefill, and auto-loaded skills) are withheld. Include the facts and output preferences the job needs directly in its prompt or attached skills. Native agent delegation is unavailable and spawn attempts are refused. The built-in memory tool remains available when enabled, so a job can still save facts. Cron scope is a task-authority policy; terminal and third-party tools keep their existing capabilities and approval rules.
 
 If the job drives a site you're logged into, the login has to be in place before the run — a scheduled tick has nobody to answer a prompt. [Scheduled and unattended runs](./browser.md#scheduled-and-unattended-runs) covers that setup.
 

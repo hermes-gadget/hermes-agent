@@ -55,7 +55,7 @@ excluding embedder descriptions. `Platform:` is deliberately not an identity fie
 the per-turn user-message channel (`agent/surface_switch.py`), so the cached prefix survives (#104414). Legacy prompts retain their original
 host-before-context anchor, so prompts persisted before the reorder still validate.
 
-When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
+When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded unless `load_soul_identity` is explicitly requested. Sessions constructed with `session_scope="cron"` always use `DEFAULT_AGENT_IDENTITY` plus fixed job-scope guidance. Cron scope withholds SOUL.md, memory/profile prompt blocks, external memory providers, plugin prompt sections, `skills.auto_load`, prefill turns, and ephemeral system overlays. Explicit job skills and workdir context remain available. See [Fresh Session Isolation](./cron-internals.md#fresh-session-isolation).
 
 ### Concrete example: assembled system prompt
 

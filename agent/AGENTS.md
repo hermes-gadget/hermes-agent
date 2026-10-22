@@ -123,9 +123,11 @@ validation and `_normalize_lang` accept; `SUPPORTED_LANGUAGES` stays the bundled
 `agent/memory_provider.py` (ABC) + `agent/memory_manager.py` (orchestrator) drive memory-provider
 plugins; `agent/context_engine.py` drives context-engine plugins; `agent/image_gen_provider.py`
 image-gen plugins (all in `plugins/AGENTS.md`). `agent/curator.py` + `curator_backup.py` implement
-the skill curator (`skills/AGENTS.md`). Cron sessions run with `skip_memory=False` (#91447 — the
-built-in store loads/updates like any other agent); external memory providers get
-`agent_context="cron"` and must skip writes for non-primary contexts (#80646).
+the skill curator (`skills/AGENTS.md`). Cron sessions run with `session_scope="cron"`
+(backlog #228): ambient standing instructions and external memory-provider initialization/recall
+are withheld, and native delegation is hidden/refused. `skip_memory=False` preserves the built-in
+store/tool for explicit job writes (#91447); MEMORY.md / USER.md are not injected into cron prompts.
+Scope policy lives in `agent/session_scope.py` and is fixed before tools or prompts are built.
 
 - End-of-session memory extraction and provider `on_session_end` run wherever the session ends —
   turn, eviction, shutdown, `tui_gateway` teardown — and the CALLER binds the owning profile's scope

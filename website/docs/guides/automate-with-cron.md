@@ -127,7 +127,7 @@ Otherwise, provide a concise summary of the activity." --name "Repo watcher" --d
 ```
 
 :::warning Self-Contained Prompts
-Notice how the prompt includes the exact `gh` commands. The cron agent has no conversation history from previous runs — spell everything out. (Persistent memory does load, so durable preferences saved to MEMORY.md carry over, but don't rely on it for job-critical details.)
+Notice how the prompt includes the exact `gh` commands. The cron agent has no conversation history from previous runs — spell everything out. Cron scope withholds ambient standing instructions, including MEMORY.md / USER.md prompt blocks and persona/plugin instructions. Put job-critical facts and output preferences directly in the prompt or attached skills. The built-in memory tool can still save facts when enabled; native agent delegation is unavailable in cron scope.
 :::
 
 ---

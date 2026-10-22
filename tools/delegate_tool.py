@@ -16,6 +16,7 @@ import time
 import weakref
 from typing import Any, Dict, List, Optional
 
+from agent.session_scope import CRON_DELEGATION_ERROR, is_cron_scope
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
 from utils import is_truthy_value
 
@@ -478,6 +479,8 @@ def delegate_task(
     dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+    if is_cron_scope(parent_agent):
+        return tool_error(CRON_DELEGATION_ERROR)
 
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:

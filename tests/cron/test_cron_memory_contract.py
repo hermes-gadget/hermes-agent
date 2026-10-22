@@ -12,11 +12,17 @@ This contract FLIPPED TWICE in August 2026 and must never flip silently again:
     *external memory provider* path (built-in MEMORY.md/USER.md store follows
     the normal ``not skip_memory or memory-toolset-requested`` rule).
 
-CURRENT INTENDED MATRIX (as of PR #91447, pinned here):
+  * Backlog #228 (2026-10-22) adds an explicit cron session scope. The built-in
+    store/tool remain available per #91447, but ambient MEMORY.md/USER.md prompt
+    blocks and external provider initialization/recall are withheld. The real
+    prompt boundary is tested in test_cron_session_scope.py.
 
-  default cron job          -> skip_memory=False; MEMORY.md/USER.md load into
-                               the system prompt; ``memory`` toolset follows
-                               normal resolution (NOT policy-denied).
+CURRENT INTENDED MATRIX (backlog #228, preserving #91447's store/tool contract):
+
+  default cron job          -> skip_memory=False; built-in store loads for the
+                               memory tool, but is withheld from the prompt;
+                               ``memory`` toolset follows normal resolution
+                               (NOT policy-denied).
   per-job enabled_toolsets  -> naming ``memory`` keeps it; skip_memory stays
                                False.
   config.yaml

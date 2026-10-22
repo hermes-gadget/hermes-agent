@@ -27,6 +27,7 @@ from agent.prompt_builder import (
 )
 from agent import prompt_builder as _pb
 from agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
+from agent.session_scope import CRON_SCOPE_GUIDANCE, is_cron_scope
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
@@ -89,7 +90,7 @@ def _plugin_session_info(agent: Any) -> Dict[str, str]:
         cwd = str(resolve_context_cwd() or "")
     except Exception:
         cwd = ""
-    info = {k: str(getattr(agent, k, None) or "") for k in ("session_id", "model", "provider", "platform")}
+    info = {k: str(getattr(agent, k, None) or "") for k in ("session_id", "model", "provider", "platform", "session_scope")}
     info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd)
     return info
 
@@ -115,6 +116,8 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
     A restored ``_cached_system_prompt`` is parsed instead of re-running plugin
     code; a render that raises at a rebuild boundary keeps the previous bytes
     (stashed by ``invalidate_system_prompt``) instead of silently vanishing."""
+    if is_cron_scope(agent):
+        return ()
     if hasattr(agent, "_plugin_system_prompt_sections_snapshot"):
         return agent._plugin_system_prompt_sections_snapshot
     stored_prompt = getattr(agent, "_cached_system_prompt", None)
@@ -322,7 +325,7 @@ def _auto_load_parts(agent: Any) -> List[str]:
     Same gate as ``_skills_prompt``: nothing without the skills toolset, and nothing for agents that skip
     context files (delegate children, curator/review forks, gateway hygiene agents) — pinned skills are
     operator guidance for the user's session, not payload for every internal fork."""
-    if getattr(agent, "skip_context_files", False) or not any(
+    if is_cron_scope(agent) or getattr(agent, "skip_context_files", False) or not any(
             name in agent.valid_tool_names for name in ("skills_list", "skill_view", "skill_manage")):
         return []
     if not getattr(agent, "_auto_load_skills_resolved", False):
@@ -517,6 +520,8 @@ def _memory_parts(agent: Any) -> List[str]:
     """Built-in memory/USER.md blocks plus the external provider block (gated on
     the same check ``inject_memory_provider_tools`` uses, so we never advertise
     tools the toolset config gated off)."""
+    if is_cron_scope(agent):
+        return []
     parts: List[str] = []
     if agent._memory_store:
         for enabled, kind in ((agent._memory_enabled, "memory"), (agent._user_profile_enabled, "user")):
@@ -542,9 +547,10 @@ def _memory_parts(agent: Any) -> List[str]:
 
 
 def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool]:
-    """SOUL.md (primary identity; cron keeps the persona while skipping cwd
-    instructions, scoped to the agent's OWN home) or the default identity.
+    """SOUL.md (scoped to the agent's OWN home) or the default identity.
     Returns ``(parts, soul_loaded)``."""
+    if is_cron_scope(agent):
+        return [DEFAULT_AGENT_IDENTITY, CRON_SCOPE_GUIDANCE], False
     wants_soul = agent.load_soul_identity or not agent.skip_context_files
     _soul_content = _pb.load_soul_md(ctx_len, home_override=_agent_home(agent)) if wants_soul else None
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
@@ -722,7 +728,7 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
     launch_artifact = getattr(agent, "_context_cwd_is_launch_artifact", False)
     cwd = resolve_context_cwd(include_session_override=not launch_artifact)
     return [_pb.build_context_files_prompt(
-        cwd=cwd, skip_soul=soul_loaded, context_length=ctx_len,
+        cwd=cwd, skip_soul=soul_loaded or is_cron_scope(agent), context_length=ctx_len,
         allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
 
 

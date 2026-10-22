@@ -637,11 +637,11 @@ class TestRunJobSessionPersistence:
             yield fake_db, mock_agent_cls
 
     def test_run_job_memory_enabled_in_cron(self, tmp_path):
-        """Cron agents get memory like any other agent run.
+        """Cron agents retain the built-in memory store/tool (#91447, backlog #228).
 
         skip_memory=False and the memory toolset is not policy-denied, so
-        MEMORY.md/USER.md load and the memory tool follows normal toolset
-        resolution.
+        MEMORY.md/USER.md load for the tool (cron scope withholds prompt
+        injection), and the memory tool follows normal toolset resolution.
         """
         job = {
             "id": "memory-enabled-job",
