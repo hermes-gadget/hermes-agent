@@ -8,6 +8,7 @@ def test_successful_historical_completion_stamps_before_restart(tmp_path, monkey
     import hermes_cli.update_cmd as update_cmd
 
     events = []
+    monkeypatch.setattr("hermes_cli.source_health.require_source_health", lambda root: None)
     monkeypatch.setattr(update_cmd, "_run_post_update_maintenance", lambda **kwargs: True)
     monkeypatch.setattr(
         source_stamp, "write_source_stamp", lambda root: events.append(("stamp", root)),

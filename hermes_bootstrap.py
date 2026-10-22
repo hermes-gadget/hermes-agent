@@ -507,6 +507,10 @@ def _legacy_post_swap_invocation(argv: list[str]) -> tuple[Path, list[str]] | No
 # without this, ``pm`` is unimportable and the launch silently skips PM adoption.
 harden_import_path(str(_root))
 
+# Capture the source generation before ANY application/PM imports: a launch
+# overlapping an update must not adopt the new generation after caching old code.
+from hermes_cli import source_health as _source_health  # noqa: F401
+
 _legacy_post_swap = _legacy_post_swap_invocation(sys.argv[1:])
 if _legacy_post_swap is not None:
     # This continuation exists precisely because the replacement tree may not

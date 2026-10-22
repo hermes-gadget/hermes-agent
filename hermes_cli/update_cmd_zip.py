@@ -20,7 +20,7 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 _ZIP_STAGING_ARTIFACT_SUFFIXES = ".hermes-update-staging", ".hermes-update-old"
 
 # Single source of truth for entries the ZIP swap preserves — used by the dirty-tree filter and the swap loop.
-_ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env"}
+_ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env", ".hermes"}
 
 # Gitignored build outputs the source ZIP never ships, nested under top-level entries the swap replaces
 # (so `_ZIP_PRESERVED_TOP_LEVEL` cannot shield them): the packaged Desktop app, its renderer bundle and
@@ -142,6 +142,8 @@ def _zip_overlay_block_reason(
     """
     if not (root / ".git").exists():
         return None
+    from hermes_cli.source_health import SOURCE_HEALTH_DIRECTORY
+
     git_cmd = ["git", "-c", "windows.appendAtomically=false"] if sys.platform == "win32" else ["git"]
     result = subprocess.run(
         # -uall: a user-level ``status.showUntrackedFiles = no`` must not blind this guard. --ignored=matching:
@@ -149,7 +151,8 @@ def _zip_overlay_block_reason(
         # as one ``dir/`` line. ``--ignored=all`` is NOT a valid git mode (exits 128, would fail-close every update).
         # ``matching`` reports an ignored directory as one ``dir/`` line instead of enumerating its contents
         # (cheaper, same verdict for the top-level filter below). See #87392.
-        git_cmd + ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"],
+        git_cmd + ["status", "--porcelain", "--untracked-files=all", "--ignored=matching",
+                   "--", ".", f":(exclude){SOURCE_HEALTH_DIRECTORY}"],
         cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode == 0 and shipped is None:

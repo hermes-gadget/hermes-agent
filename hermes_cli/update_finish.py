@@ -10,6 +10,9 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
                   had_desktop_app_before_update, pre_update_version,
                   plan, windows_resume) -> None:
     """Finish the selected checkout; never fetch, switch branches or restore a stash."""
+    from hermes_cli.source_health import require_source_health
+
+    require_source_health(Path(root))
     from hermes_cli.update_cmd import (
         _run_post_update_maintenance,
         _restart_gateway_fleet_after_update, _verify_fleet_after_update,
@@ -22,6 +25,7 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         had_desktop_app_before_update=had_desktop_app_before_update,
         pre_update_version=pre_update_version,
     )
+    require_source_health(Path(root))
     if complete:
         from hermes_cli.source_stamp import write_source_stamp
 

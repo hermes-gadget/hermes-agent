@@ -10,6 +10,7 @@ import codecs
 import json
 import os
 import signal
+from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 import sys
@@ -170,6 +171,9 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
 
 
 def _complete_selected(request: dict) -> None:
+    from hermes_cli.source_health import publish_source_ready, require_source_health
+
+    require_source_health(Path(request["source"]))
     from hermes_cli import main, update_cmd, update_cmd_config
     from hermes_cli.source_completion import complete_source_checkout
     from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
@@ -191,9 +195,14 @@ def _complete_selected(request: dict) -> None:
         announce=None if request.get("completion_message") else "\n✓ Code updated!")
     from hermes_cli.update_receipt import record_stage
     record_stage("build", "success" if complete else "failed")
+    # A partial SQLite-runtime verdict is not source skew. Preserve its existing
+    # failure receipt/restart behavior once the final source graph is healthy.
+    require_source_health(root)
     if complete:
         from hermes_cli.venv_sync import clear_completion
         clear_completion(root)
+    if request.get("source_update_id"):
+        publish_source_ready(root, request["source_update_id"])
     # systemctl's KillMode=mixed fallback can kill this whole cgroup. Publish the
     # gateway watcher's status BEFORE that operation, and demote on later failure.
     if request["gateway_mode"]:
@@ -293,14 +302,20 @@ def main() -> int:
     # -I deliberately ignores inherited PYTHONPATH during PM preparation.
     sys.path.insert(0, str(root))
     sys.stdout = _ForwardedOutput(sys.stdout, request.get("stdout_isatty", False))
+    scope = nullcontext()
+    if request.get("source_update_id"):
+        from hermes_cli.source_health import source_completion
+        scope = source_completion(root, request["source_update_id"])
     if "--prepared" in sys.argv[3:]:
         # Claim the selected generation's lease and process its .pth files only
         # after PM selection, before importing any application dependencies.
         from pm.environments import activate_dependencies
-        activate_dependencies(root)
-        return _finish(request, result_path)
+        with scope:
+            activate_dependencies(root)
+            return _finish(request, result_path)
     try:
-        return _prepare(request, request_path, result_path)
+        with scope:
+            return _prepare(request, request_path, result_path)
     except BaseException as exc:
         # PM failed before application dependencies were ready. Leave the parent
         # receipt and paused-gateway obligation intact for boundary recovery.
