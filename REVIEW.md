@@ -5,7 +5,8 @@
 Implementation commit: `73a6060c79595bc20e7e3467f45e8b63b3334574`.
 Base: `d5034303528f56c089209cf134de0e7a976573a7` (also the remote main verified at task start).
 Branch: `burn/state-db-lease-20261022`.
-PR: to be recorded in the follow-up link commit.
+PR: https://github.com/gadgethd/hermes-agent/pull/1
+Validation report commit: `7dcc635b519c855dd8471da2f6ee7a43346f852b`.
 
 The brief's original immediate-abort path was already partly fixed on this base by
 `3cfaae9b7b89d483d2889cc194afc384b36c486b` (October 12): refresh errors get a bounded
