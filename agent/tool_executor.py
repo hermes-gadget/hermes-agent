@@ -37,6 +37,7 @@ from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
 from agent.lsp import deferred as lsp_deferred
 from agent.prompt_cache_scope import conversation_id
+from agent.session_scope import CRON_DELEGATION_ERROR, is_cron_scope
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -699,6 +700,8 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
+    if scope_block is None and is_cron_scope(agent) and ref.name == "delegate_task":
+        scope_block = CRON_DELEGATION_ERROR
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"

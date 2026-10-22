@@ -325,10 +325,23 @@ agent↔Nous wire contract lives in [Chronos managed-cron contract](chronos-mana
 Each cron job runs in a completely fresh agent session:
 
 - No conversation history from previous runs
-- No memory of previous cron executions (persistent memory — MEMORY.md /
-  USER.md — does load, like any other agent run, so durable preferences and
-  facts carry over; per-run conversation context does not)
+- An explicit `session_scope="cron"`, fixed at construction. Ambient standing
+  instructions are withheld: MEMORY.md / USER.md prompt blocks, external memory
+  providers (including automatic recall), SOUL.md, plugin prompt sections,
+  `skills.auto_load`, global prefill turns and ephemeral system instructions.
+  The built-in memory store and tool remain available under normal toolset
+  resolution; scheduled jobs can still save facts (#91447), without inheriting
+  standing authority from those files (backlog #228).
 - The prompt must be self-contained — cron jobs cannot ask clarifying questions
+- Scope guidance restricts work to the declared job, attached skills, and explicit
+  workdir context. It forbids unrelated investigations, repairs, and spawning
+  agents through native delegation, orchestration services, terminal or MCP tools.
+- Native delegation is excluded from the toolset and refused at dispatch, including
+  direct handler calls and background/batch requests. This is a session policy,
+  not an OS sandbox: arbitrary terminal commands and third-party tools retain
+  their existing capabilities and approval rules.
+- Agent initialization logs `cron scope: standing instructions withheld` with the
+  session ID. Prompt bytes and the toolset remain fixed during the session.
 - The `cronjob` toolset is disabled (recursion guard)
 
 ## Skill-Backed Jobs

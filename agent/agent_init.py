@@ -30,6 +30,7 @@ from agent.iteration_budget import IterationBudget, normalize_budget_warning_rat
 from agent.memory_context import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
+from agent.session_scope import is_cron_scope, resolve_session_scope
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint
 )
@@ -1102,6 +1103,9 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
     }
+    if is_cron_scope(agent):
+        agent._session_init_model_config["session_scope"] = agent.session_scope
+        logger.info("Session %s cron scope: standing instructions withheld; delegation disabled", agent.session_id)
     # Process-scoped --yolo is persisted so `hermes --resume` restores the bypass
     # (SessionDB.session_yolo_enabled); session-scoped /yolo toggles persist separately.
     with suppress(Exception):
@@ -1170,8 +1174,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     # Flush/background agents can still pass enabled_toolsets=["memory"] so the built-in file store exists
     # and the memory tool does not fail with store=None (#65429). A toolset on disabled_toolsets is not a
     # request: a caller that denylists memory while its default toolset still names it must not get
-    # MEMORY.md loaded by an enabled-only check. (Cron agents now run with skip_memory=False and take the
-    # normal path here.)
+    # MEMORY.md loaded by an enabled-only check. Cron keeps this store for explicit job writes;
+    # session scope withholds its prompt blocks, independently of tool availability.
     _memory_toolset_requested = (
         "memory" in (agent.enabled_toolsets or [])
         and "memory" not in (agent.disabled_toolsets or [])
@@ -1202,13 +1206,16 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                 agent._memory_store.load_from_disk()
 
     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
+    # Providers can inject standing authority through both prompt blocks and automatic recall.
+    # Cron retains the built-in store/tool above without initializing that ambient context path.
     agent._memory_manager = None
-    if memory_manager is not None and not skip_memory:
+    allow_provider = not skip_memory and not is_cron_scope(agent)
+    if memory_manager is not None and allow_provider:
         # A caller that rebuilds the agent per turn (gateway api_server) hands back the session's
         # already-initialized manager: providers keep their prefetch/retain state across turns instead
         # of being re-initialized (#120116). No initialize_all — the providers are already bound.
         agent._memory_manager = memory_manager
-    elif not skip_memory:
+    elif allow_provider:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):
@@ -2092,6 +2099,7 @@ def init_agent(
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    session_scope: Optional[str] = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -2102,6 +2110,12 @@ def init_agent(
         fallback_model = {}
     _install_safe_stdio()
 
+    agent.session_scope = resolve_session_scope(session_scope, platform)
+    if is_cron_scope(agent):
+        disabled_toolsets = list(dict.fromkeys([*(disabled_toolsets or []), "delegation"]))
+        ephemeral_system_prompt = None
+        prefill_messages = None
+        skip_background_review = True
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:
         setattr(agent, _name, _params[_name])

@@ -318,8 +318,8 @@ class TestRunJobTerminalCwd:
 
         # Feature is OFF — skip_context_files stays True.
         assert observed["skip_context_files"] is True
-        # Cron still forces SOUL.md identity even when cwd context files stay off.
-        assert observed["load_soul_identity"] is True
+        # Backlog #228: cron scope withholds ambient SOUL.md standing authority.
+        assert observed["load_soul_identity"] is False
         # TERMINAL_CWD saw the same value during init as it had before.
         assert observed["terminal_cwd_during_init"] == before
         # And after run_job completes, it's still the sentinel (nothing

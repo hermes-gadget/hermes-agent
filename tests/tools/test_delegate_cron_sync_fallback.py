@@ -13,6 +13,10 @@ review fork.  Delegated children must never spawn that fork — it inherits the
 child's (often premium) model, replays the whole conversation, and its spawn
 inside the child's finalize path is the wedge site the cron watchdog kills.
 
+Backlog #228 now refuses real cron-scoped parents before dispatch. This historical
+regression still covers the general stateless-channel fallback with a default-scope
+parent, so other stateless surfaces retain working synchronous delegation.
+
 This exercises the REAL end-to-end #86632 path: a genuine ``AIAgent`` child
 (mocked LLM client) with the skill-review trigger armed, dispatched through
 ``delegate_task(background=True)`` under a session runtime where async delivery
@@ -86,7 +90,7 @@ def _make_real_child():
     return child
 
 
-def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
+def test_stateless_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
     """The #86632 path: sync fallback completes AND no review fork spawns.
 
     Red on the pre-fix code: the delegated child's finalize path constructed a
@@ -104,6 +108,7 @@ def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
 
     child = _make_real_child()
     parent = MagicMock()
+    parent.session_scope = "default"
     parent._delegate_depth = 0
     parent.session_id = "cron_244ee2c8b9da"
     parent._interrupt_requested = False
@@ -127,7 +132,7 @@ def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
     done: dict = {}
 
     def _call_delegate_task():
-        # Cron declares the channel stateless (#66617): async delivery is
+        # The historical cron path's channel is stateless (#66617): async delivery is
         # unsupported and there is no bound origin session id to wake, so
         # delegate_task must run the batch synchronously.
         with (
