@@ -262,11 +262,23 @@ inspected; an independent extraction from the broad base/fixed logs again found
 | Branch, PR and committed handoff | Remote branch matched the audited head; PR #1 was OPEN against private-fork `main`, MERGEABLE, with no status checks reported. This report is committed on the branch. |
 | Scope and invariants | Only this report changes during the continuation; isolated development/test homes retained. No live writes, restarts, deployment, merge or delegated agents. |
 
-Remote `main` still matched the documented base. The existing automated PR review
-reported no findings on `7dcc635b519c855dd8471da2f6ee7a43346f852b`; this is
-additional review evidence, not a substitute for tests. The GitHub connector
-returned 404 for this private repository, so the existing repository credential
-helper was used for readback without exposing or changing credentials.
+Remote `main` still matched the documented base. An earlier automated PR review
+reported no findings on `7dcc635b519c855dd8471da2f6ee7a43346f852b`. Final readback
+from `73d5f53249c0174594f609596cd91f940041def8` found that its newer automated
+review could not complete because the code-review quota was exhausted. The
+current PR has no submitted reviews, inline findings or status checks; the failed
+automated review supplies no approval. The GitHub connector returned 404 for this
+private repository, so the existing repository credential helper was used for
+readback without exposing or changing credentials.
+
+The final continuation classified the previous turn as progress: the committed
+report, pushed head and passing eight-file receipt were all present. Source and
+tests still exactly matched implementation commit `73a6060c79595bc20e7e3467f45e8b63b3334574`,
+so the existing 94-pass receipt remained applicable without repeating the suite.
+Independent extraction again confirmed identical sets of 60 broad-suite failures
+on base and fix; Ruff and the base-to-head whitespace check passed. Remote
+`main`, branch head and PR target were rechecked. Only this handoff report and
+the PR's review-status disclosure change in the final continuation.
 
 ## Deliberately left out / residual risks / open questions
 
@@ -303,3 +315,6 @@ helper was used for readback without exposing or changing credentials.
 - Plain `gh` selected a different saved credential and could not resolve the
   private repository. Using the existing Git credential helper for that repository
   verified API access without printing or changing credentials.
+- During final readback I mistook JSON escaping for a doubled shell continuation
+  in the PR test command. Inspecting the actual characters confirmed it was valid;
+  no command edit was made.
