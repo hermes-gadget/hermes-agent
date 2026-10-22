@@ -32,6 +32,7 @@ from agent.display import (
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.session_scope import CRON_DELEGATION_ERROR, is_cron_scope
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -701,6 +702,8 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
+    if scope_block is None and is_cron_scope(agent) and ref.name == "delegate_task":
+        scope_block = CRON_DELEGATION_ERROR
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"

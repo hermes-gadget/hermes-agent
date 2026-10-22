@@ -80,7 +80,7 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   exits before its ownership ack (a reported dispatch failure) rather than run on an unleased
   generation the collector may delete. The gateway never re-runs the boot — `hermes_bootstrap`
   already did at its own launch (#122222).
-- Cron sessions run with `skip_memory=False` (#91447: the built-in MEMORY.md store loads/updates like any other agent) while memory providers receive `agent_context="cron"` and must skip writes for non-primary contexts (#80646) — a cron transcript never persists to a memory backend.
+- Cron sessions have `session_scope="cron"` (backlog #228). Ambient memory/persona/plugin prompt blocks, auto-loaded skills, global prefill and external memory-provider initialization/recall are withheld; native delegation is hidden and refused. `skip_memory=False` preserves the built-in MEMORY.md store/tool for explicit job writes (#91447). Attached job skills and an explicit workdir remain job inputs. Scope is session-local and fixed before the first prompt/tool snapshot; initialization logs `cron scope: standing instructions withheld`.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
   or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored

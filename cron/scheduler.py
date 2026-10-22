@@ -2436,12 +2436,13 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
         disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
         quiet_mode=True,
-        # Project context files only with a configured workdir; SOUL.md always.
+        # Project context only for an explicitly configured workdir; ambient standing authority withheld.
         skip_context_files=not bool(workdir),
-        load_soul_identity=True,
+        load_soul_identity=False,
         skip_memory=False,
         skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
         platform="cron",
+        session_scope="cron",
         session_id=session_id,
         session_db=session_db,
     )
