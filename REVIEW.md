@@ -1,99 +1,78 @@
-# Backlog round 2 review — hermes-agent
+# Cron session scope — backlog #228
 
-Branch: `backlog2-20261003` (local only). No remotes were changed, and no live
-Hermes services or user configuration were modified.
+Status: implemented, tested, pushed; PR open. No deployment, service restart, or live configuration edit was performed.
 
-## #476 — IMPLEMENTED
+- Branch: `burn/cron-scope-leak-20261022`
+- Implementation commit: `af2dd9e5dac030d6c18e7d5bca03d8941dc16eee`
+- Baseline: `d5034303528f56c089209cf134de0e7a976573a7` (also the remote `main` SHA checked during this run)
+- PR: https://github.com/gadgethd/hermes-agent/pull/3
+- This review is committed separately after the implementation; the PR includes both commits.
 
-The bundled Google Workspace OAuth copy-paste flow used `http://localhost:1`,
-which Chrome rejects as an unsafe port. The redirect is now
-`http://localhost:8765`; the skill guidance and regression test use the same
-browser-safe loopback contract.
+## Mechanism and scope boundary
 
-Files changed:
+Before this change, `cron.scheduler._construct_cron_agent()` supplied `platform="cron"`, `skip_memory=False`, and `load_soul_identity=True`, but no authority scope. `agent.agent_init._init_memory()` initialized ambient memory, `agent.system_prompt._memory_parts()` appended its instructions, and `_frozen_plugin_prompt_sections()` rendered standing plugin sections without a cron gate. `tools.delegate_tool.delegate_task()` had no cron refusal before child construction.
 
-- `skills/productivity/google-workspace/scripts/setup.py`
-- `skills/productivity/google-workspace/SKILL.md`
-- `tests/skills/test_google_workspace_setup.py`
+`agent/session_scope.py` now owns an explicit, session-local scope. The scheduler passes `session_scope="cron"`; legacy constructors using `platform="cron"` infer it, and cannot explicitly downgrade to the default scope. Other transports can also bind cron scope explicitly. It is resolved before the tool snapshot or prompt is built, without environment variables or mutable process-global policy.
 
-Proof: `scripts/run_tests.sh tests/skills/test_google_workspace_setup.py -q`
-passed (4 tests). No live OAuth authorization was attempted.
+Cron scope withholds entire ambient sources rather than filtering strings: MEMORY.md / USER.md prompt blocks, SOUL.md, plugin prompt sections, global `skills.auto_load`, prefill messages, ephemeral system overlays, and external memory-provider initialization/automatic recall. The fixed scope guidance confines work to the declared job, forbids unrelated investigations/repairs and agent spawning through external services, and requests only the deliverable in the final response. Background review forks stay disabled.
 
-## #493 — CLOSED-ALREADY
+The delegation toolset is excluded at construction. Both sequential and concurrent executors block native delegation before plugin authorization or dispatch and classify it as a scope block. The native handler also refuses direct/registry calls, covering single, batch, and background requests before credentials or child construction. Refusals explain that cron scope forbids spawning/delegation.
 
-The current base already contains the intended secure solution. Commit
-`e4aeb65599` added per-route webhook `toolsets` overrides, and
-`9345c67854` bound those grants to the authenticated route after the delivery
-ID security fix. The default webhook toolset remains constrained, while a
-trusted route can manually opt into `terminal`/`file`; the CLI deliberately
-does not let an agent-created subscription self-grant those tools.
+Initialization logs `cron scope: standing instructions withheld` with the session ID and records `session_scope` in session model metadata. Prompt/tool state remains fixed during the session; the tests also verify identical scoped prompt bytes through the existing compression rebuild boundary.
 
-Files changed: none for this item. The behavior is documented in
-`website/docs/user-guide/messaging/webhooks.md` and covered by
-`tests/gateway/test_webhook_route_toolsets.py`.
+## What jobs can still do
 
-Proof: `scripts/run_tests.sh tests/gateway/test_webhook_route_toolsets.py -q`
-passed (12 tests). The live configuration was intentionally not changed.
+Jobs retain their declared prompt, explicitly attached skills, and explicit workdir context. Existing file, terminal, browser, web, and other configured tools retain their normal resolution/approval rules. The built-in memory store/tool remains available for explicit job writes, preserving #91447's capability without importing standing authority into the system prompt. Script-only jobs are unchanged. Interactive sessions retain their existing memory, persona, plugin sections, auto-loaded skills, and native delegation.
 
-## #513 — IMPLEMENTED
+## Risks, deliberately left out, and open questions
 
-`channel_prompts` was a generic shared-key bridge even for Matrix, although the
-Matrix adapter has no consumer. The loader now excludes that one unsupported
-`(channel_prompts, matrix)` pair and removes it from merged platform data and
-`extra`, including the legacy top-level form. Generic shared-key bridging for
-registered plugin platforms is preserved.
+This is a task-authority boundary, not an OS sandbox. Native delegation is enforced in code. Arbitrary terminal commands or third-party MCP tools can have orchestration capabilities that Hermes cannot infer; the scope guidance forbids using those to spawn agents, but this change does not claim vendor-side or OS enforcement. Trusted plugin hooks retain their existing capabilities. Tool results and explicitly read files are data, and the scope guidance states that they cannot widen authority.
 
-Files changed:
+Withholding whole ambient sources also removes harmless preferences/persona and external memory access from cron sessions. Jobs relying on those must move required facts/instructions into their declared prompt or attached skills. Explicit workdir instructions remain available but cannot widen job authority. Existing in-flight conversations are not rewritten. No core tool, provider-specific integration, new behavioral environment variable, live migration, restart, or deployment was added.
 
-- `gateway/config_loader.py`
-- `tests/gateway/test_config_loader_platform_shared_keys.py`
+No blocking implementation question remains. A stronger sandbox for arbitrary external orchestration would require a separately designed capability boundary; it is not implied by these tests.
 
-Proof: `scripts/run_tests.sh tests/gateway/test_config_loader_platform_shared_keys.py -q`
-passed (3 tests), including the real YAML load/merge/bridge path. No user
-`config.yaml` was edited.
+## Verification and PROOF
 
-## #522 — IMPLEMENTED
+All tests used the canonical runner, temporary Hermes homes, real agent/config/plugin/memory/prompt imports, and a stubbed model transport. The new fixtures load actual temporary plugins and memory files. Profile coverage is A→B→A under multiplex mode with explicitly bound secret scopes.
 
-`hermes mcp add` now accepts `--all-tools` (with `--yes` as an alias) and
-passes it through to discovery. The tool-selection prompt is skipped and all
-discovered tools are enabled, so a stdio script no longer cancels on EOF.
+The baseline focused run, before production edits, failed both new tests: the assembled cron prompt contained `Full Auto Mode standing block`, and a spawn reached the sentinel in `_build_children` (`cron attempted to construct a delegated child`). This used:
 
-Files changed:
+```bash
+HERMES_HOME="$PWD/.burn/runner-home" HERMES_RUNTIME_DIR="$PWD/.burn/runtime" \
+HERMES_PYTHON=/home/ben/.hermes/hermes-agent/venv/bin/python \
+scripts/run_tests.sh tests/cron/test_cron_session_scope.py -j 1 --file-retries 0 -v --tb=short
+```
 
-- `hermes_cli/subcommands/mcp.py`
-- `hermes_cli/mcp_config.py`
-- `tests/hermes_cli/test_mcp_config.py`
-- `tests/hermes_cli/test_subcommands_followup.py`
+Final verification used the fresh PM-created Python 3.14 test environment inside this worktree:
 
-Proof: the focused `TestMcpAdd` run passed (4 tests), and the parser regression
-test accepts both flags. The flag addresses the discovery/tool-selection prompt;
-existing HTTP auth and overwrite prompts retain their interactive semantics.
+```bash
+export HERMES_HOME="$PWD/.burn/runner-home"
+export HERMES_RUNTIME_DIR="$PWD/.burn/runtime"
+export HERMES_PYTHON="$PWD/.burn/runner-home/installs/94d0ef429dea9f8a/test-environment/gen-7a415a51af0740798a379ed28cbeab1e/venv/bin/python"
 
-## #532 — IMPLEMENTED
+scripts/run_tests.sh tests/cron/test_cron_session_scope.py tests/tools/test_delegate_cron_sync_fallback.py -j 2 --file-retries 0 -v --tb=short
+```
 
-The deny-glob `rm` boundary treated the `rm` suffix in options such as
-Docker's `--rm` as the command. The boundary now also excludes `-`, preserving
-blocks for a real `rm -rf ...backup...` while allowing container commands with
-backup-named mounts.
+**PROOF: 2 files, 3 tests passed, 0 failed in 25.3s.** The cron file's two tests passed:
 
-Files changed:
+- `test_cron_prompt_withholds_standing_authority_while_interactive_keeps_it`: cron lacks both Full Auto and MissionDeck spawn-authority instructions; interactive includes both from its own profile. Also checks provider/persona/autoload exclusion, retained workdir/memory-tool access, prefill/ephemeral exclusion, scope diagnostics, and stable rebuilds.
+- `test_cron_spawn_is_refused_before_dispatch`: direct handler, registry, sequential, concurrent, single/batch/background attempts are refused before child construction; explicit cron scope also works on a CLI transport.
 
-- `tools/approval_floors.py`
-- `tests/tools/test_approval_deny_rules.py`
+The third test preserves ordinary stateless-session synchronous delegation. Its historical cron regression now explicitly uses default scope, since real cron-scoped parents are refused.
 
-Proof: `scripts/run_tests.sh tests/tools/test_approval_deny_rules.py -q`
-passed (39 tests), including Docker/Podman `--rm` and real `rm` controls.
+Broader regression command:
 
-## Test notes
+```bash
+scripts/run_tests.sh tests/cron/test_cron_session_scope.py tests/cron/test_scheduler.py tests/cron/test_cron_memory_contract.py tests/cron/test_cron_workdir.py tests/cron/test_agent_scheduling_gate.py tests/agent/test_system_prompt.py tests/agent/test_plugin_prompt_sections.py tests/agent/test_skip_memory_store.py tests/agent/test_memory_provider_init.py tests/agent/test_tool_call_guardrail_runtime.py tests/tools/test_delegate.py tests/tools/test_delegate_control_actions.py tests/tools/test_delegate_toolset_scope.py tests/tools/test_delegate_cron_sync_fallback.py -j 2 --file-retries 0 -v --tb=short
+```
 
-The combined focused run excluding one unrelated pre-existing import test
-passed: 89 tests, 0 failures. The full `tests/hermes_cli/test_mcp_config.py`
-file still has one existing failure,
-`TestMcpTest::test_cli_dispatcher_forwards_test_exit_code`: importing
-`hermes_cli.main` probes the real worktree marker
-`.git/worktrees/backlog2-20261003/hermes-update-pull`, which the test home I/O
-guard rejects. The failure reproduces in an isolated file run and is unrelated
-to these changes; the modified `TestMcpAdd` tests pass independently.
+**Result: 14 files, 327 tests passed, 0 failed in 289.2s.** After the final test-only clarifications, the focused command above passed again. `git diff --check` also passed. Local final logs: `.burn/cron-scope-regression.log` and `.burn/cron-scope-final-proof.log`. No full-suite or live-provider/model test is claimed.
 
-`git diff --check` passes. The external `/home/ben/mcp-gmail` checkout was not
-modified because the task scope is this worktree only.
+## Honest mistake inventory
+
+- Initially selected an older `.venv` without pytest, triggering isolated PM activation. Its downloaded tooling and test environment stayed under `.burn/`; no system package installation was used. The redundant optional bytecode precompile was stopped once; tests themselves were not bypassed.
+- The first fixture lazily constructed the real SDK, causing the real-home I/O guard to reject metadata probes into the shared interpreter installation. The remote transport was stubbed; the scope-relevant integration paths remain real.
+- The old shared environment masked an undeclared PyYAML import in the new fixture. Fresh Python 3.14 collection exposed it; the fixture now uses `hermes_yaml`.
+- Initial native refusal returned through ordinary failure observation, which could append a repeated-error warning. Moving the refusal into the shared authorization gate made it a proper scope block.
+- Default `gh` authentication could not see the private fork. PR operations reused the Git origin's already-configured credential for the subprocess only; no authentication configuration was changed and no credential was printed or saved.
