@@ -176,7 +176,9 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
             return False, "disabled"
     except Exception as exc:
         logger.debug("Could not read updates.auto_switch_parked_branch: %s", exc)
-    status = _git_run(git_cmd, ["status", "--porcelain"], cwd)
+    from hermes_cli.source_health import SOURCE_HEALTH_DIRECTORY
+
+    status = _git_run(git_cmd, ["status", "--porcelain", "--", ".", f":(exclude){SOURCE_HEALTH_DIRECTORY}"], cwd)
     if status.returncode != 0:
         return False, "unverifiable"
     if status.stdout.strip():

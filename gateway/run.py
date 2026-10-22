@@ -5818,6 +5818,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
 
+    from gateway.run_startup import check_source_before_gateway_start
+    if not await check_source_before_gateway_start():
+        return False
+
     # Messaging-only defaults belong to startup, not incidental imports by the TUI.
     configured_cwd = os.environ.get("TERMINAL_CWD", "")
     if not configured_cwd or configured_cwd in CWD_PLACEHOLDERS:

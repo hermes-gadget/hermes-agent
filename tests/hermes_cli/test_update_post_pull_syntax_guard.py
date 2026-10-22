@@ -43,14 +43,16 @@ def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):
     assert error is None
 
 
-def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("critical_file", ["hermes_constants.py", "hermes_bootstrap.py", "hermes_cli/source_health.py"])
+def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_path, monkeypatch, capsys, critical_file):
     def git(*args):
         return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
 
     git("init", "-b", "main")
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "Test")
-    source = tmp_path / "hermes_constants.py"
+    source = tmp_path / critical_file
+    source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("print('runnable')\n", encoding="utf-8")
     git("add", ".")
     git("commit", "-m", "working")

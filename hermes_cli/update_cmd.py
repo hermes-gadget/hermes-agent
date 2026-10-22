@@ -211,6 +211,7 @@ def _no_prompt_git_kwargs() -> dict:
 
 _UPDATE_CRITICAL_FILES = (
     "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
+    "hermes_bootstrap.py", "hermes_cli/source_health.py",
     "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
     "hermes_constants.py")
 
@@ -1443,166 +1444,170 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
     _record_snapshot_stage(args, pre_update_snapshot_id)
 
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
-    if _windows_gateway_resume:
-        import atexit as _atexit
-        _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
+    from hermes_cli.source_health import source_update
+
+    with source_update(_m().PROJECT_ROOT) as source_update_id:
+        _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
+        if _windows_gateway_resume:
+            import atexit as _atexit
+            _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
 
 
-    desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-    # An installed Hermes.app only this update refreshes counts even with no release/ build
-    # beside it: without one it was never rebuilt, so it never got newer (#52339).
-    had_desktop_app_before_update = (
-        _m()._desktop_packaged_executable(desktop_dir) is not None
-        or _m()._desktop_dist_exists(desktop_dir)
-        or bool(_m()._installed_desktop_apps()))
+        desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
+        # An installed Hermes.app only this update refreshes counts even with no release/ build
+        # beside it: without one it was never rebuilt, so it never got newer (#52339).
+        had_desktop_app_before_update = (
+            _m()._desktop_packaged_executable(desktop_dir) is not None
+            or _m()._desktop_dist_exists(desktop_dir)
+            or bool(_m()._installed_desktop_apps()))
 
-    use_zip_update, git_cmd, is_fork = _prepare_git_command()
+        use_zip_update, git_cmd, is_fork = _prepare_git_command()
 
-    completion_request = _source_completion_request(
-        opts, _pre_update_plan, pre_update_snapshot_id, _windows_gateway_resume,
-        had_desktop_app_before_update, gateway_mode)
-    branch = _m()._resolve_update_branch(args)
-    completion_request["branch"] = branch
-    target_ref = f"origin/{branch}"
-    release_sha = None
-    target_repository = None
-    selected_channel = _source_update_channel(args)
-    if not getattr(args, "branch", None):
-        from hermes_cli.release_channels import retrying_reads
-        from hermes_cli.source_releases import resolve_source_target
+        completion_request = _source_completion_request(
+            opts, _pre_update_plan, pre_update_snapshot_id, _windows_gateway_resume,
+            had_desktop_app_before_update, gateway_mode)
+        completion_request["source_update_id"] = source_update_id
+        branch = _m()._resolve_update_branch(args)
+        completion_request["branch"] = branch
+        target_ref = f"origin/{branch}"
+        release_sha = None
+        target_repository = None
+        selected_channel = _source_update_channel(args)
+        if not getattr(args, "branch", None):
+            from hermes_cli.release_channels import retrying_reads
+            from hermes_cli.source_releases import resolve_source_target
 
-        from copy import deepcopy
-        from hermes_cli.config import require_readable_config_before_write
-        from hermes_cli.update_channel import channel_record
+            from copy import deepcopy
+            from hermes_cli.config import require_readable_config_before_write
+            from hermes_cli.update_channel import channel_record
 
-        original_record = deepcopy(channel_record(require_readable_config_before_write(
-            Path(completion_request["home"]) / "config.yaml"), _m().PROJECT_ROOT))
-        print(f"→ Update channel: {selected_channel}")
-        try:
-            with retrying_reads():
-                target = resolve_source_target(
-                    selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            print(f"✗ Could not resolve the {selected_channel} source channel: {exc}. No update was applied.")
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-            sys.exit(1)
-        if target.retired:
-            print(f"→ {selected_channel} retired; source destination: {target.channel}")
-            if (not getattr(args, "channel", None)
-                    and original_record.get("channel", "main") == selected_channel):
-                completion_request["channel_retirement"] = {
-                    "original": original_record, "destination": target.channel}
-        target_repository = target.repository
-        release_sha = target.commit
-        if release_sha:
-            print(f"→ Latest release: {target.label}")
-            target_ref = release_sha
-            completion_request["expected_sha"] = release_sha
-        else:
-            assert target.branch is not None  # a SourceTarget without a commit names its branch
-            branch = target.branch
-            completion_request["branch"] = branch
-            target_ref = f"origin/{branch}"
-
-    if use_zip_update:
-        try:
-            _update_via_zip(
-                args, had_desktop_app_before_update=had_desktop_app_before_update,
-                target_sha=release_sha, completion_request=completion_request,
-                **({"target_repository": target_repository} if target_repository else {}))
-        finally:
-            if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
+            original_record = deepcopy(channel_record(require_readable_config_before_write(
+                Path(completion_request["home"]) / "config.yaml"), _m().PROJECT_ROOT))
+            print(f"→ Update channel: {selected_channel}")
+            try:
+                with retrying_reads():
+                    target = resolve_source_target(
+                        selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                print(f"✗ Could not resolve the {selected_channel} source channel: {exc}. No update was applied.")
                 _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+                sys.exit(1)
+            if target.retired:
+                print(f"→ {selected_channel} retired; source destination: {target.channel}")
+                if (not getattr(args, "channel", None)
+                        and original_record.get("channel", "main") == selected_channel):
+                    completion_request["channel_retirement"] = {
+                        "original": original_record, "destination": target.channel}
+            target_repository = target.repository
+            release_sha = target.commit
+            if release_sha:
+                print(f"→ Latest release: {target.label}")
+                target_ref = release_sha
+                completion_request["expected_sha"] = release_sha
+            else:
+                assert target.branch is not None  # a SourceTarget without a commit names its branch
+                branch = target.branch
+                completion_request["branch"] = branch
+                target_ref = f"origin/{branch}"
 
-        return
+        if use_zip_update:
+            try:
+                _update_via_zip(
+                    args, had_desktop_app_before_update=had_desktop_app_before_update,
+                    target_sha=release_sha, completion_request=completion_request,
+                    **({"target_repository": target_repository} if target_repository else {}))
+            finally:
+                if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
+                    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 
-    try:
-        # Self-heal abandoned .git/*.lock files (crashed fetch) or the fetch fails "File exists".
-        from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
-        cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
-        if cleared:
-            print("  (removed stale git lock(s): %s)" % ", ".join(cleared))
-        swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
-        if swept:
-            print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
-        # Shallow installer checkouts collect one `.git/shallow` graft per past depth-1 fetch
-        # (#105951); stale grafts break merge-base and push this run into the divergence path.
-        from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
-        repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
-        if repaired:
-            print(f"  (restored {repaired} broken shallow boundary(ies))")
-        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
-        if pruned:
-            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
-
-        # Surface autostashes left by earlier updates (--keep-stash, failed restores).
-        # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash
-        # runs and failed restores preserve the stash but nothing ever mentioned it again.
-        _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
-
-        # A shallow checkout's plain fetch drags in ~the whole history and cannot finish inside
-        # the network cap (#123254); its grafts also make merge-base report orphan divergence
-        # (#123346, #124645). Unshallow it (commits only) first.
-        _heal_stale_shallow_checkout(_m().PROJECT_ROOT, branch)
-
-        print("→ Fetching updates...")
-        if release_sha:
-            fetch_args = ["fetch", "--no-tags", "origin", target_ref]
-        else:
-            fetch_args = ["fetch", "origin", _check.tracking_refspec("origin", branch)]
-        from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
-        # One retry with the promisor machinery disabled clears the git 2.53/2.54
-        # partial-clone pack-objects crash (#124272).
-        fetch_result = fetch_with_partial_clone_recovery(
-            lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args)
-        if fetch_result.returncode != 0:
-            if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
-                print("✗ git still crashed after the partial-clone retry. Heal the checkout once manually:")
-                print("  git -c remote.origin.promisor= fetch origin && git fetch origin")
-            _print_fetch_failure(fetch_result.stderr)
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-            sys.exit(1)
-
-        current_branch = _current_branch_name(git_cmd, check=True)
-        _plan = _prepare_checkout_for_update(
-            git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
-            gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
-            target_ref=target_ref, _windows_gateway_resume=_windows_gateway_resume)
-        commit_count = _plan.commit_count
-
-        if commit_count == 0:
-            _finish_already_up_to_date(
-                git_cmd, branch, current_branch, _plan, gw_input_fn=gw_input_fn,
-                completion_request=completion_request)
             return
 
-        if release_sha:
-            print(f"→ Switching to source commit {release_sha[:10]}")
-        elif commit_count > 0:
-            print(f"→ Found {commit_count} new commit(s)")
-        elif _plan.switched_without_new_commits:
-            print(f"→ Switched the running checkout to {branch} (no new commits to count)")
-        else:
-            # Shallow, exact count unrecoverable — but the tips differ, so there IS an update.
-            print("→ Updates available (commit count unknown on this shallow checkout)")
-
-        print("→ Pulling updates...")
-        movement_baseline = _pull_updates(
-            git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
-            gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
-            rollback_branch=_plan.rollback_branch,
-            sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
-            in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
-        _apply_pulled_update(
-            git_cmd, branch, movement_baseline, _plan,
-            _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
-    except subprocess.CalledProcessError as e:
         try:
-            _handle_update_called_process_error(
-                e, args, gateway_mode, had_desktop_app_before_update, target_sha=release_sha,
-                target_repository=target_repository, completion_request=completion_request)
-        finally:
-            if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
+            # Self-heal abandoned .git/*.lock files (crashed fetch) or the fetch fails "File exists".
+            from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+            cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
+            if cleared:
+                print("  (removed stale git lock(s): %s)" % ", ".join(cleared))
+            swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
+            if swept:
+                print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
+            # Shallow installer checkouts collect one `.git/shallow` graft per past depth-1 fetch
+            # (#105951); stale grafts break merge-base and push this run into the divergence path.
+            from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
+            repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
+            if repaired:
+                print(f"  (restored {repaired} broken shallow boundary(ies))")
+            pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
+            if pruned:
+                print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
+
+            # Surface autostashes left by earlier updates (--keep-stash, failed restores).
+            # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash
+            # runs and failed restores preserve the stash but nothing ever mentioned it again.
+            _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
+
+            # A shallow checkout's plain fetch drags in ~the whole history and cannot finish inside
+            # the network cap (#123254); its grafts also make merge-base report orphan divergence
+            # (#123346, #124645). Unshallow it (commits only) first.
+            _heal_stale_shallow_checkout(_m().PROJECT_ROOT, branch)
+
+            print("→ Fetching updates...")
+            if release_sha:
+                fetch_args = ["fetch", "--no-tags", "origin", target_ref]
+            else:
+                fetch_args = ["fetch", "origin", _check.tracking_refspec("origin", branch)]
+            from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
+            # One retry with the promisor machinery disabled clears the git 2.53/2.54
+            # partial-clone pack-objects crash (#124272).
+            fetch_result = fetch_with_partial_clone_recovery(
+                lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args)
+            if fetch_result.returncode != 0:
+                if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
+                    print("✗ git still crashed after the partial-clone retry. Heal the checkout once manually:")
+                    print("  git -c remote.origin.promisor= fetch origin && git fetch origin")
+                _print_fetch_failure(fetch_result.stderr)
                 _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+                sys.exit(1)
+
+            current_branch = _current_branch_name(git_cmd, check=True)
+            _plan = _prepare_checkout_for_update(
+                git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
+                gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
+                target_ref=target_ref, _windows_gateway_resume=_windows_gateway_resume)
+            commit_count = _plan.commit_count
+
+            if commit_count == 0:
+                _finish_already_up_to_date(
+                    git_cmd, branch, current_branch, _plan, gw_input_fn=gw_input_fn,
+                    completion_request=completion_request)
+                return
+
+            if release_sha:
+                print(f"→ Switching to source commit {release_sha[:10]}")
+            elif commit_count > 0:
+                print(f"→ Found {commit_count} new commit(s)")
+            elif _plan.switched_without_new_commits:
+                print(f"→ Switched the running checkout to {branch} (no new commits to count)")
+            else:
+                # Shallow, exact count unrecoverable — but the tips differ, so there IS an update.
+                print("→ Updates available (commit count unknown on this shallow checkout)")
+
+            print("→ Pulling updates...")
+            movement_baseline = _pull_updates(
+                git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
+                gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
+                keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
+                rollback_branch=_plan.rollback_branch,
+                sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
+                in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
+            _apply_pulled_update(
+                git_cmd, branch, movement_baseline, _plan,
+                _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
+        except subprocess.CalledProcessError as e:
+            try:
+                _handle_update_called_process_error(
+                    e, args, gateway_mode, had_desktop_app_before_update, target_sha=release_sha,
+                    target_repository=target_repository, completion_request=completion_request)
+            finally:
+                if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
+                    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

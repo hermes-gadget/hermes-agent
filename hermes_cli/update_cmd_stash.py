@@ -82,8 +82,14 @@ def _print_first_line(text: str) -> None:
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     global _pending_autostash
     from hermes_cli.update_cmd_git import _git_run
+    from hermes_cli.source_health import SOURCE_HEALTH_DIRECTORY
     _pending_autostash = None
-    status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
+    # Stash stages its pathspec internally. A literal ignored .hermes prefix
+    # makes that add fail; bracketing the leading dot avoids the ignored-path
+    # error while still excluding only this checkout's gate.
+    gate_glob = f"[.]{SOURCE_HEALTH_DIRECTORY[1:]}/**"
+    paths = ["--", ".", f":(exclude,top,glob){gate_glob}"]
+    status = _git_run(git_cmd, ["status", "--porcelain", "-z", *paths], cwd, check=True)
     if not status.stdout.strip():
         return None
     # Unmerged index entries (interrupted merge/rebase) make `git stash` fail with
@@ -106,7 +112,8 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     stash_name = datetime.now(timezone.utc).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
     print("→ Local changes detected — stashing before update...")
     prev_stash = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd).stdout.strip()
-    push = _git_run(git_cmd, ["stash", "push", "--include-untracked", "-m", stash_name], cwd)
+    # The maintenance gate must survive even a user's modified ignore rules.
+    push = _git_run(git_cmd, ["stash", "push", "--include-untracked", "-m", stash_name, *paths], cwd)
     _print_nonempty(push.stdout)
     stash_probe = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd)
     stash_ref = stash_probe.stdout.strip()

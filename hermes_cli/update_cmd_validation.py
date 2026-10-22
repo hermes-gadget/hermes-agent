@@ -7,7 +7,10 @@ from hermes_cli._launchers import runtime_command
 
 # Modules imported on every startup. Unlike _UPDATE_CRITICAL_FILES (only parsed) these are
 # *imported*, catching cross-module breakage (a name pulled from a sibling no longer exists).
-_UPDATE_CRITICAL_MODULES = "hermes_cli.main", "run_agent", "model_tools", "toolsets"
+_UPDATE_CRITICAL_MODULES = (
+    "hermes_cli.main", "run_agent", "model_tools", "toolsets",
+    "agent.tool_executor", "agent.conversation_loop", "gateway.run",
+)
 
 
 def _critical_module_import_failures(
@@ -25,6 +28,7 @@ def _critical_module_import_failures(
     marker = f"__HERMES_IMPORT_HEALTH_{secrets.token_hex(16)}__"
     probe = (
         "import importlib, json, sys\n"
+        "from pathlib import Path\n"
         # Importing hermes_cli.main runs the startup dotenv load, which pulls external secret
         # sources (op/bws/command helpers, up to 120s each) unless argv says ``update``. The
         # probe only checks importability, so it inherits the updater's own argv contract.
@@ -32,7 +36,9 @@ def _critical_module_import_failures(
         "failures = []\n"
         "for name in %r:\n"
         "    try:\n"
-        "        importlib.import_module(name)\n"
+        "        module = importlib.import_module(name)\n"
+        "        if not Path(module.__file__).resolve().is_relative_to(Path(%r)):\n"
+        "            raise ImportError(f'{name} loaded from another checkout: {module.__file__}')\n"
         "    except ModuleNotFoundError as exc:\n"
         # A missing *third-party* module means deps aren't installed, not a skewed checkout;
         # only our own packages count. Roots come from hermes_constants so the user hint can't drift.
@@ -47,15 +53,22 @@ def _critical_module_import_failures(
         "    except BaseException as exc:\n"
         "        failures.append((name, type(exc).__name__, str(exc)))\n"
         "sys.stdout.write('\\n%s' + json.dumps(failures))\n"
-        % (_UPDATE_CRITICAL_MODULES, tuple(sorted(FIRST_PARTY_MODULE_ROOTS)), report_runtime_errors,
+        % (_UPDATE_CRITICAL_MODULES, str(Path(root).resolve()), tuple(sorted(FIRST_PARTY_MODULE_ROOTS)), report_runtime_errors,
            report_runtime_errors, marker))
     try:
+        command = runtime_command(Path(root), code=probe)
+        # Bootstrap runs before ``probe``. Set its mode before that import too,
+        # otherwise a health check can recursively start launch-time completion.
+        bootstrap = command.index("-c") + 1
+        command[bootstrap] = "import sys; sys.argv = ['hermes', 'update']; " + command[bootstrap]
         result = subprocess.run(
-            runtime_command(Path(root), code=probe), cwd=str(root), capture_output=True, text=True,
+            command, cwd=str(root), capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=120)
     except subprocess.TimeoutExpired:
         return _probe_failure("TimeoutExpired", "timed out before reporting import health")
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        if report_runtime_errors:
+            return _probe_failure(type(exc).__name__, str(exc))
         # Can't run the probe — don't block the update on our own tooling.
         return {}
     output = result.stdout or ""

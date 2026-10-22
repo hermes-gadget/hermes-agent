@@ -17,6 +17,7 @@ import time
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from pathlib import Path
+from hermes_cli.source_health import SourceHealthError, require_tool_execution_imports, source_session
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
@@ -35,6 +36,17 @@ from typing import Any, Dict, Optional, Tuple
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+async def check_source_before_gateway_start() -> bool:
+    """Refuse before PID/control sockets, credential keepalive or adapters start."""
+    try:
+        with source_session():
+            await asyncio.to_thread(require_tool_execution_imports)
+        return True
+    except SourceHealthError as exc:
+        logger.error("Gateway refused to start: %s", exc)
+        return False
 
 
 class GatewayStartupMixin:
@@ -1563,7 +1575,13 @@ class GatewayStartupMixin:
     async def start(self) -> bool:
         """Start the gateway and all configured platform adapters."""
         try:
-            return await self._start_impl()
+            with source_session():
+                if not await check_source_before_gateway_start():
+                    return False
+                return await self._start_impl()
+        except SourceHealthError as exc:
+            logger.error("Gateway refused to start: %s", exc)
+            return False
         finally:
             # Every startup path (early aborts included) ends here: bound startup on the latest
             # diagnostic snapshot once, instead of flushing at each return.

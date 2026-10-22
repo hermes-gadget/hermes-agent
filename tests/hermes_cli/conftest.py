@@ -111,6 +111,9 @@ def isolated_source_completion(monkeypatch):
 
     monkeypatch.setattr("hermes_cli.source_build.build_update_products", lambda *a, **kw: None)
     monkeypatch.setattr("hermes_cli.venv_sync.publish_launchers", lambda *a: None)
+    # These unit fixtures carry synthetic Git/runtime responses. Real imports
+    # and the mandatory health gate run in test_source_health/update_finish.
+    monkeypatch.setattr("hermes_cli.source_health.require_source_health", lambda *a: None)
 
     def complete(request):
         update_completion._complete_selected(request)
@@ -152,5 +155,8 @@ def probe_root(tmp_path):
     health marker — a developer venv whose editable ``.pth`` shadows the root hides
     the dependency, CI's clean environment does not.
     """
-    (tmp_path / "hermes_bootstrap.py").write_text("", encoding="utf-8")
+    # Launch preparation must already see update mode before the probe body
+    # runs, so an import check cannot recursively start source completion.
+    (tmp_path / "hermes_bootstrap.py").write_text(
+        "import sys\nassert sys.argv == ['hermes', 'update']\n", encoding="utf-8")
     return tmp_path

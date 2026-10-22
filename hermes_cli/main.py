@@ -2497,11 +2497,12 @@ def cmd_update(args):
 
 
     from hermes_cli.update_cmd import _cmd_update_impl
+    from hermes_cli.source_health import SourceHealthError
     from pm import InstallError
 
     try:
         _cmd_update_impl(args, gateway_mode=gateway_mode)
-    except (InstallError, OSError, subprocess.SubprocessError) as exc:
+    except (SourceHealthError, InstallError, OSError, subprocess.SubprocessError) as exc:
         print(f"✗ Update failed: {exc}")
         _finalize_update_receipt(1, f"{type(exc).__name__}: {exc}")
         if gateway_mode:

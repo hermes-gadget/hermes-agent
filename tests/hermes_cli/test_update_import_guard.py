@@ -233,6 +233,8 @@ def test_import_guard_is_non_fatal_when_probe_cannot_run(monkeypatch, tmp_path):
     monkeypatch.setattr(update_cmd_validation, "runtime_command",
                         lambda root, *, code: [str(selected_python), "-I", "-c", code])
     assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
+    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path, report_runtime_errors=True)
+    assert not ok and module == "critical-module probe" and error
 
 # ---------------------------------------------------------------------------
 # partial_update_hint
