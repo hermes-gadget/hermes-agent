@@ -282,9 +282,13 @@ def test_preparation_reuses_only_the_exact_completed_workspace_union(source_chec
 
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("desktop", [False, True])
-def test_update_builds_selected_products_after_one_union_preparation(source_products, desktop):
+def test_update_builds_selected_products_after_one_union_preparation(source_products, desktop, monkeypatch):
     from hermes_cli.source_build import build_update_products
     from hermes_cli.main_web_build import _web_ui_build_needed
+
+    # The staging fixture has no live Desktop. Do not inspect unrelated host
+    # processes while testing build order and product publication.
+    monkeypatch.setattr("hermes_cli.main_desktop._stop_desktop_processes_locking_build", lambda *a, **kw: [])
 
     root, acquired = source_products
     app = root / "apps/desktop/release/linux-unpacked/hermes"

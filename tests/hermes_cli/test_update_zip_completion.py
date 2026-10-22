@@ -74,6 +74,9 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
     monkeypatch.setattr(main, "_desktop_dist_exists", lambda root: False)
     monkeypatch.setattr(update_cmd, "_source_update_channel", lambda args: "main")
     monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", lambda branch: None)
+    # This archive deliberately contains only a payload fixture. Real import
+    # integrity, including missing tool exports, is covered by test_source_health.
+    monkeypatch.setattr("hermes_cli.source_health.require_source_health", lambda root: None)
 
     def prepare(selected, *, desktop):
         assert selected == root and desktop is False
@@ -199,7 +202,8 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
               for profile in (state.active, state.sibling)}
     old_project = (state.root / "pyproject.toml").read_bytes()
     original_tree = {p.relative_to(state.root): p.read_bytes()
-                     for p in state.root.rglob("*") if p.is_file()}
+                     for p in state.root.rglob("*") if p.is_file()
+                     and not p.is_relative_to(state.root / ".hermes/source-health")}
     monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (route == "direct", ["git"], False))
     monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
     monkeypatch.setattr(update_cmd, "_should_zip_fallback_on_update_error", lambda exc: True)
@@ -240,7 +244,9 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
         assert (state.root / "payload.txt").read_text() == "old"
     if failure != "preparation":
         assert {p.relative_to(state.root): p.read_bytes() for p in state.root.rglob("*")
-                if p.is_file() and p.name != ".hermes-update-zip-swap.lock"} == original_tree
+                if p.is_file() and p.name != ".hermes-update-zip-swap.lock"
+                and not p.is_relative_to(state.root / ".hermes/source-health")} == original_tree
+    assert json.loads((state.root / ".hermes/source-health/status.json").read_bytes())["status"] == "updating"
     assert state.events == ["resume"]
     assert state.token["resume_needed"] is False
     assert {profile: (profile / "config.yaml").read_bytes() for profile in before} == before

@@ -725,6 +725,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
+
+    from gateway.run_startup import check_source_before_gateway_start
+    if not await check_source_before_gateway_start():
+        return False
     from hermes_cli.update_proxy_env import restore_user_proxy_env
     restore_user_proxy_env()  # a gateway an update restarted keeps the user's proxy env, not the update's
     _start_gateway_resolve_terminal_cwd()

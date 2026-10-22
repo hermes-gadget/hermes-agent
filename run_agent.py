@@ -23,6 +23,8 @@ if "hermes_cli.main" not in sys.modules:
     if _early_recovery.restore_interrupted_pull():
         _early_recovery.relaunch_after_restore()
 
+from hermes_cli.source_health import require_tool_execution_imports, source_session_guard
+
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -233,6 +235,7 @@ class AIAgent(
         self._base_url_lower = value.lower() if value else ""
         self._base_url_hostname = base_url_hostname(value)
 
+    @source_session_guard
     def __init__(
         self,
         base_url: str | None = None, api_key: str | None = None, provider: str | None = None, api_mode: str | None = None,
@@ -284,6 +287,7 @@ class AIAgent(
         if tool_delay is not None:
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
+        require_tool_execution_imports()
         from agent.agent_init import init_agent
         init_agent(self, **init_kwargs)
 

@@ -2293,6 +2293,7 @@ def cmd_update(args):
         sys.exit(UPDATE_EXIT_CONCURRENT)
 
     from hermes_cli.update_cmd import _cmd_update_impl
+    from hermes_cli.source_health import SourceHealthError
     from pm import InstallError
 
     def _custody_refusal() -> str | None:
@@ -2303,7 +2304,7 @@ def cmd_update(args):
 
     try:
         _cmd_update_impl(args, gateway_mode=gateway_mode)
-    except (InstallError, OSError, subprocess.SubprocessError) as exc:
+    except (SourceHealthError, InstallError, OSError, subprocess.SubprocessError) as exc:
         refusal = _custody_refusal()
         print(refusal or f"✗ Update failed: {exc}")
         _finalize_update_receipt(1, f"{type(exc).__name__}: {exc}")

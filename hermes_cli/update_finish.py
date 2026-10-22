@@ -18,6 +18,9 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
     the gateway topology is left alone. An unsafe SQLite runtime is reported by maintenance and
     vetoes migration only.
     """
+    from hermes_cli.source_health import require_source_health
+
+    require_source_health(Path(root))
     from hermes_cli.update_cmd import (
         _run_post_update_maintenance,
         _restart_gateway_fleet_after_update, _verify_fleet_after_update,
@@ -39,6 +42,7 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         reason = str(exc) or type(exc).__name__
         record_followup("maintenance", reason)
         owed.append(("maintenance", reason))
+    require_source_health(Path(root))
     tail_owed = any(step in TAIL_FOLLOWUPS for step, _ in owed)
     record_build_stage(owed)
     if not tail_owed:

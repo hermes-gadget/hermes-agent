@@ -10,6 +10,7 @@ import codecs
 import json
 import os
 import signal
+from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 import sys
@@ -384,6 +385,9 @@ def _complete_selected(request: dict) -> bool:
     Returns False only when the user's local changes were left parked in the stash: nothing
     retries that, so the run is ``partial`` and exits 1 (#122557), never "Update complete".
     """
+    from hermes_cli.source_health import publish_source_ready, require_source_health
+
+    require_source_health(Path(request["source"]))
     from hermes_cli import main, update_cmd, update_cmd_config
     from hermes_cli.source_completion import complete_source_checkout
     from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
@@ -420,11 +424,14 @@ def _complete_selected(request: dict) -> bool:
         _report_desktop_build_owed(request, None, "the source-update tail did not run")
         record_followup("completion", reason)
         followups.append(("completion", reason))
+    require_source_health(root)
     tail_owed = any(step in TAIL_FOLLOWUPS for step, _ in followups)
     record_build_stage(followups)
     if not tail_owed:
         from hermes_cli.venv_sync import clear_completion
         clear_completion(root)
+    if request.get("source_update_id"):
+        publish_source_ready(root, request["source_update_id"])
     # systemctl's KillMode=mixed fallback can kill this whole cgroup. Publish the
     # gateway watcher's status BEFORE that operation: the code is committed, so it is 0 unless
     # the user's own changes are still parked.
@@ -557,13 +564,19 @@ def main() -> int:
     # -I deliberately ignores inherited PYTHONPATH during PM preparation.
     sys.path.insert(0, str(root))
     sys.stdout = _ForwardedOutput(sys.stdout, request.get("stdout_isatty", False))
+    scope = nullcontext()
+    if request.get("source_update_id"):
+        from hermes_cli.source_health import source_completion
+        scope = source_completion(root, request["source_update_id"])
     if "--prepared" in sys.argv[3:]:
         # Claim the selected generation's lease and process its .pth files only
         # after PM selection, before importing any application dependencies.
         from pm.environments import activate_dependencies
-        activate_dependencies(root)
-        return _finish(request, result_path)
-    return _bootstrap(request, request_path, result_path)
+        with scope:
+            activate_dependencies(root)
+            return _finish(request, result_path)
+    with scope:
+        return _bootstrap(request, request_path, result_path)
 
 
 def _bootstrap(request: dict, request_path: Path, result_path: Path) -> int:

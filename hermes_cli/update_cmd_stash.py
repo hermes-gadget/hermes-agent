@@ -152,7 +152,8 @@ def _scan_local_changes(git_cmd: list[str], cwd: Path, untracked_targets=()) -> 
     from hermes_cli.update_cmd_git import _git_run
     # Explicit mode: status.showUntrackedFiles=no would hide every untracked entry, and an empty
     # leave-set means the stash takes them all.
-    status = _git_run(git_cmd, ["status", "--porcelain", "-z", "--untracked-files=normal"], cwd, check=True)
+    status = _git_run(git_cmd, ["status", "--porcelain", "-z", "--untracked-files=normal",
+                            "--", ".", ":(exclude,top,glob)[.]hermes/source-health/**"], cwd, check=True)
     if not status.stdout.strip():
         return None
     records = _porcelain_records(status.stdout)
@@ -263,7 +264,8 @@ def _push_stash(git_cmd: list[str], cwd: Path, stash_name: str, prev_stash: str,
     when a push saved everything but could not clean up. Untracked entries in *leave* stay on disk
     (an exclude pathspec: git never hashes them, which is what made a 55 GB stray dir take minutes)."""
     from hermes_cli.update_cmd_git import _git_run
-    scope = ["--", ".", *(_literal(p, "exclude") for p in leave)] if leave else []
+    scope = ["--", ".", ":(exclude,top,glob)[.]hermes/source-health/**",
+             *(_literal(p, "exclude") for p in leave)]
     push = _git_run(git_cmd, ["stash", "push", "--include-untracked", "-m", stash_name, *scope], cwd)
     _print_nonempty(push.stdout)
     stash_probe = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd)

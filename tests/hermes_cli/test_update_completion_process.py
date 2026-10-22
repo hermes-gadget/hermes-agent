@@ -117,6 +117,17 @@ def transition(tmp_path):
         "convert_treeless_checkout_first = lambda root: event('convert')\n"
     )
     (package / "main.py").write_text("")
+    (package / "source_health.py").write_text(
+        "from hermes_cli.probe import event\n"
+        "from contextlib import contextmanager\n"
+        "@contextmanager\n"
+        "def source_completion(root, generation):\n"
+        "    event('source_scope_enter')\n"
+        "    try: yield\n"
+        "    finally: event('source_scope_exit')\n"
+        "require_source_health = lambda root: event('self_test')\n"
+        "publish_source_ready = lambda root, generation: event('source_ready')\n"
+    )
     (package / "update_cmd_config.py").write_text("_LAST_SIBLING_SNAPSHOTS = {}\n")
     (package / "update_inventory.py").write_text(
         "from types import SimpleNamespace\nRuntimeRecord = UpdatePlan = SimpleNamespace\n"
@@ -187,6 +198,7 @@ def transition(tmp_path):
     new = git("rev-parse", "HEAD")
     request = {
         "schema": 1, "source": str(root), "home": str(home), "branch": "main",
+        "source_update_id": "health-generation",
         "desktop": True, "assume_yes": True, "gateway_mode": True,
         "pre_update_version": "old", "snapshot_id": "active-before",
         "sibling_snapshots": {"work": "work-before"},
@@ -245,11 +257,16 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     assert by_name["convert"]["pid"] == by_name["prepare"]["pid"] and names.index("convert") < names.index("tools")
     assert Path(by_name["build"]["python"]).is_relative_to(root.parent / "selected-python")
     assert by_name["build"]["pid"] == by_name["maintenance"]["pid"] == by_name["restart"]["pid"]
+    for name in ("prepare", "build"):
+        pid = by_name[name]["pid"]
+        names = [event["name"] for event in events if event["pid"] == pid]
+        assert names.index("source_scope_enter") < names.index(name) < names.index("source_scope_exit")
     assert by_name["maintenance"]["snapshots"] == {"work": "work-before"}
     assert by_name["maintenance"]["pre_update_snapshot_id"] == "active-before"
     assert by_name["maintenance"]["pre_update_version"] == "日本 café"
     assert by_name["restart"]["profiles"] == ["work"]
     assert [e["name"] for e in events].index("exit_marker") < [e["name"] for e in events].index("restart")
+    assert [e["name"] for e in events].index("source_ready") < [e["name"] for e in events].index("restart")
 
 
 def _run_cmd_update(monkeypatch, request, capsys):

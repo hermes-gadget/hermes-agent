@@ -557,6 +557,9 @@ def _pin_launcher_home() -> None:
 
 _pin_launcher_home()
 
+# Capture the generation after torn-tree repair, before application/PM imports.
+from hermes_cli import source_health as _source_health  # noqa: F401
+
 _legacy_post_swap = _legacy_post_swap_invocation(sys.argv[1:])
 if _legacy_post_swap is not None:
     # This continuation exists precisely because the replacement tree may not

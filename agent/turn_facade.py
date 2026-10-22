@@ -11,6 +11,7 @@ from contextlib import suppress
 from typing import Any, Dict, Generator, List, Optional
 
 from agent.lazy_forward import forward as _forward
+from hermes_cli.source_health import source_session_guard
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -19,6 +20,7 @@ logger = logging.getLogger("run_agent")
 class TurnFacadeMixin:
     """run_conversation()/chat() (see module docstring)."""
 
+    @source_session_guard
     def run_conversation(
         self, user_message: Any, system_message: str | None=None,
         conversation_history: list[dict[str, Any]] | None=None, task_id: str | None=None,

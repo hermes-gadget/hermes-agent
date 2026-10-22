@@ -178,6 +178,65 @@ publication uses the launcher owner's `expose_cli`; the historical ACP entry is
 only an adapter, never a second writer. The frozen set is never trimmed or replaced
 with tag-only coverage. New current-path imports are unioned with that history.
 
+## Source health and admission
+
+`hermes_cli/source_health.py` closes the interval that a post-update probe alone
+cannot cover: Git/stash/branch changes and the individual ZIP swaps happen while
+old processes still have cached Python modules. The updater closes admission
+before any of those mutations and waits up to 30 seconds for startup, agent
+construction and active turns to release their source leases. If work stays
+active, it restores the previous gate state and refuses without changing source.
+An update started from a tool in an active turn therefore refuses after this
+bounded wait; retry it from a separate terminal after the turn finishes.
+
+The gate and kernel-held reader/writer locks live in
+`<checkout>/.hermes/source-health/`, an already ignored runtime directory shared
+by every profile using that checkout. They are independent of the updater's
+home-scoped UI marker and have no age-based expiry. A failed or killed update
+leaves a durable `updating` record; losing a PID or releasing the writer lock
+does not reopen sessions. Read-only package trees without a gate do not need
+to create one: their deployment manager owns code replacement.
+Status/stash pathspecs and the ZIP preserve set protect the gate even when a
+checkout's local ignore rules omit it; autostash cannot remove its locked files.
+Completion processes hold their own leases through PM preparation and selected
+Python completion. Killing the transport parent releases its writer lock, but a
+successor updater must still drain those children before touching source.
+
+After dependency preparation, completion probes imports in a fresh selected
+interpreter before application maintenance and again before publication. The
+probe includes `agent.tool_executor` and `agent.conversation_loop`, alongside
+the CLI, agent facade, model tools, toolsets and gateway. This resolves lazy
+imports such as `agent.display.tool_row_emoji` before the first tool call.
+Missing dependencies, a probe that cannot run, and imports resolving to another
+checkout fail the mandatory probe. Failed health checks prevent normal builds,
+readiness publication and fleet restart. The historical finish path uses the
+same health check.
+
+After final source health passes, completion publishes a new generation before
+restarting the fleet. An unrelated partial SQLite-runtime verdict still fails
+the update receipt as before; it does not hold otherwise healthy code offline.
+Bootstrap captures that generation before importing application or PM
+code; existing processes cannot adopt it midway through startup or on their next
+turn. Gateway startup and the first agent construction eagerly import the tool
+execution graph as well. A stale process refuses agent work with a restart
+message, including when `--no-gateway-restart` deliberately defers the restart.
+This preserves cached prompts and modules rather than reloading a conversation.
+
+Operators see `Gateway refused to start` or `sessions remain held`, the failing
+module/symbol, and instructions to finish/retry `hermes update` and restart the
+affected processes. `python -m hermes_cli.source_health` checks the selected
+runtime without reopening admission. Do not remove the gate to bypass a failed
+self-test. Retry the updater to complete its normal dependency/build/restart
+flow. Existing syntax rollback, rescue refs, ZIP rollback and stash preservation
+remain; no automatic code rollback is added after maintenance has begun.
+
+This is a maintenance pause, not a versioned-tree or zero-downtime deployment.
+It avoids replacing checkout paths, editable installs and the existing rollback
+machinery. The first rollout still needs the normal fleet restart: code already
+loaded by an older release has no source-admission guard. Subsequent updates are
+protected once the guarded processes are running. Arbitrary external edits or
+Git commands that bypass the updater do not participate in this protocol.
+
 ## Verification
 
 Use isolated homes, disposable Git repositories and fake dependency/build/service
