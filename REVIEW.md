@@ -223,6 +223,51 @@ git diff --check
 
 Result: Ruff **all checks passed**; whitespace check clean.
 
+## Continuation completion audit (22 October 2026)
+
+Resumed from `a14984dfd1c453a6da461998e930e9e674008efc` after reading this
+report and the git history. The previous turn made concrete progress: it
+committed the implementation and verification, pushed the branch and opened
+PR #1. Current source inspection confirmed the reported transaction boundaries,
+read-pool fallback, owner-qualified refresh/release and transcript fencing.
+No further production changes were needed.
+
+Fresh verification extended the focused suite to cross-backend orphan ownership
+and compression publication:
+
+```bash
+HERMES_PYTHON="$PWD/.cache/burn-lease/python" scripts/run_tests.sh \
+  tests/hermes_state/test_orphan_sweep_contention.py \
+  tests/agent/test_turn_lease_sqlite_contention.py \
+  tests/agent/test_turn_facade_lease.py tests/agent/test_cross_process_turn_lease.py \
+  tests/hermes_state/test_sweep_orphaned_sessions.py \
+  tests/hermes_state/test_session_turn_lease.py \
+  tests/hermes_state/test_orphan_sweep_cross_backend.py \
+  tests/hermes_state/test_compression_lease_refresh_before_publish.py \
+  --file-retries 0 -j 4
+```
+
+Result: **94 passed, 0 failed**, eight files, 79.3s runner wall, exit 0,
+no retries. Receipt: `.cache/burn-lease/continuation-audit-tests.log`.
+Ruff passed again and `git diff --check d5034303528f56c089209cf134de0e7a976573a7`
+was clean. The saved base-proof driver and the actual failure assertions were
+inspected; an independent extraction from the broad base/fixed logs again found
+60 failing IDs on each side, with no fixed-only or base-only IDs.
+
+| Brief requirement | Completion evidence |
+| --- | --- |
+| Identify long writers and implement a justified fix | Lock-holder analysis above; discovery moved outside the WAL write transaction, mutation bounded and revalidated; no timeout increase. |
+| Real 20s+ stall survival and genuine lease-loss protection | Fresh passing 21s discovery and 22s writer-stall cases, including committed takeover, rejected stale flush and owner-qualified release. |
+| Regressions red on base, green on fix | Saved exact-base production proof: four intended failures and two passing controls; all six regressions pass in the fresh run. |
+| Branch, PR and committed handoff | Remote branch matched the audited head; PR #1 was OPEN against private-fork `main`, MERGEABLE, with no status checks reported. This report is committed on the branch. |
+| Scope and invariants | Only this report changes during the continuation; isolated development/test homes retained. No live writes, restarts, deployment, merge or delegated agents. |
+
+Remote `main` still matched the documented base. The existing automated PR review
+reported no findings on `7dcc635b519c855dd8471da2f6ee7a43346f852b`; this is
+additional review evidence, not a substitute for tests. The GitHub connector
+returned 404 for this private repository, so the existing repository credential
+helper was used for readback without exposing or changing credentials.
+
 ## Deliberately left out / residual risks / open questions
 
 - No live configuration/database edits, deployment, service restart, system
