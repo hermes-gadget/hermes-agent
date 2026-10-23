@@ -352,6 +352,11 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
     safety/config check. The provider is asked for the BUCKETED count so near-identical limits share an entry;
     the caller's count is sliced out. Only successful, non-rescued responses are cached — caching a rescue
     would make the one-shot ring fallback sticky for a whole TTL."""
+    # A setup failure must reach the caller, even after a prior successful query.
+    # Rescue is for runtime failures of a ready provider, not missing dependencies.
+    if not _provider_is_ready(provider):
+        return provider.search(query, limit)
+
     from tools.web_result_cache import bucket_limit, search_memo, slice_search_response
 
     def _paid_search() -> tuple[dict, bool]:

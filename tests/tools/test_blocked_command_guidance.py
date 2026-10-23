@@ -88,6 +88,8 @@ class TestPackageManagerInstallExemption:
             "uv pip install --python /tmp/project/.venv fastapi uvicorn",
             "uv pip install --python /tmp/project/.venv fastapi uvicorn && "
             "python -c 'import fastapi, uvicorn; print(fastapi.__version__, uvicorn.__version__)'",
+            "uv add fastapi uvicorn",
+            "uv --directory /tmp/project add fastapi uvicorn gunicorn",
         ):
             assert _foreground_background_guidance(cmd) is None, cmd
 
@@ -102,5 +104,8 @@ class TestPackageManagerInstallExemption:
             "uvicorn app:app",
             "nodemon app.js",
             "yarn dev",
+            "uv add fastapi uvicorn && uv run uvicorn app:app",
+            "uvicorn app:app --uds /tmp/pip install",
+            "npm run dev -- install",
         ):
             assert _foreground_background_guidance(cmd) is not None, cmd

@@ -101,8 +101,8 @@ _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
 # (``npm install nodemon``, ``pip install uvicorn``): nothing is launched, so
 # it must not trip the long-lived-server guidance.
 _PACKAGE_MANAGER_INSTALL_RE = re.compile(
-    r"\b(?:pip3?|python3?\s+-m\s+pip|conda|apt(?:-get)?|apk|brew|npm|pnpm|yarn|bun)\s+"
-    r"(?:\S+\s+)*(?:install|add)\b",
+    r"\b(?:pip3?|python3?\s+-m\s+pip|uv|conda|apt(?:-get)?|apk|brew|npm|pnpm|yarn|bun)\s+"
+    r"(?:\S+\s+)*?(?:install|add)\b",
     re.IGNORECASE,
 )
 # Split on top-level shell separators only — the input is already quote-blanked
@@ -113,15 +113,16 @@ _TOP_LEVEL_SEPARATOR_RE = re.compile(r"&&|\|\||;|\n|\|")
 def _has_long_lived_foreground_launch(unquoted_command: str) -> bool:
     """Long-lived-launch check scoped per chained command segment.
 
-    The exemption is evaluated per segment, not on the whole line: matching it
-    anywhere in the string would let ``npm install nodemon && npm start``
-    silently suppress the warning for the real ``npm start`` launch too.
+    Only dependency arguments after an install verb are exempt. A real launch
+    before that verb (``npm run dev -- install``) or in a later chained segment
+    (``npm install nodemon && npm start``) must still warn.
     """
-    return any(
-        any(pattern.search(segment) for pattern in _LONG_LIVED_FOREGROUND_PATTERNS)
-        for segment in _TOP_LEVEL_SEPARATOR_RE.split(unquoted_command)
-        if not _PACKAGE_MANAGER_INSTALL_RE.search(segment)
-    )
+    for segment in _TOP_LEVEL_SEPARATOR_RE.split(unquoted_command):
+        install = _PACKAGE_MANAGER_INSTALL_RE.search(segment)
+        launch = segment[:install.end()] if install else segment
+        if any(pattern.search(launch) for pattern in _LONG_LIVED_FOREGROUND_PATTERNS):
+            return True
+    return False
 
 # Ordered (predicate on the unquoted command, guidance) — first hit wins.
 _FOREGROUND_GUIDANCE = (
