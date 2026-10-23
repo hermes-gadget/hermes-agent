@@ -329,6 +329,17 @@ command printed `admitted smoke job`. No multi-GiB allocation was performed.
   both return 404. Browser connection reports that a trusted browser service
   is unavailable. PR creation requires an authorized account connection;
   reading stored credentials to bridge accounts is outside this envelope.
-- Remaining handoff work: push this branch, open/verify a PR targeting the
-  private origin's `main`, then have Ben execute the operator actions in a
-  maintenance window. Do not merge, deploy or restart services from this lane.
+- Implementation and report were committed and pushed with
+  `git push -u origin burn/hermes-memory-20261023`; Git confirmed the new branch
+  at report commit `a485f333f896ff84ae6e278ac0ba0eba1db1c3de`.
+- A concrete PR creation attempt through the GitHub connector, targeting
+  `gadgethd/hermes-agent:main` from this exact branch, returned HTTP 404 from
+  `/repos/gadgethd/hermes-agent/pulls`. No PR was created by that attempt.
+  Ben was asked to connect an authorized account or open the private compare
+  link; no stored credential workaround was attempted.
+- Remaining handoff work: open/verify the private PR, then have Ben execute
+  the operator actions in a maintenance window. Do not merge, deploy or
+  restart services from this lane. This is a PR-access blocker, not a failing
+  implementation/test or a claim that host remediation has already happened.
+
+PROOF: `pytest` targeted suites pass + `docs/reviews/20261023-hermes-memory.md` committed at sha a485f333f896ff84ae6e278ac0ba0eba1db1c3de
