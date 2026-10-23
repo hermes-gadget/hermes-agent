@@ -203,7 +203,9 @@ class DDGSWebSearchProvider(BaseWebSearchProvider):
         See #36776, #68096.
         """
         if not self.is_available():
-            return search_fail("ddgs package is not installed — run `pip install ddgs`")
+            from pm import install_hint
+
+            return search_fail(f"ddgs package is not installed or cannot be imported — run `{install_hint('ddgs')}`")
         try:
             # max(1, …): defensive cap in case the package ignores its max_results hint.
             web_results = _run_ddgs_search_bounded(query, max(1, int(limit)))
@@ -223,7 +225,7 @@ class DDGSWebSearchProvider(BaseWebSearchProvider):
         return search_ok(web_results)
 
     def get_setup_schema(self) -> Dict[str, Any]:
-        # post_setup triggers `_run_post_setup("ddgs")` so the package gets pip-installed on first pick.
+        # post_setup enables the declared ddgs extra through PM on first pick.
         return setup_schema(
             "DuckDuckGo (ddgs)", "free · no key · search only",
             "Search via the ddgs Python package — no API key (pair with any extract provider)", post_setup="ddgs",
