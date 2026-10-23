@@ -750,6 +750,13 @@ That keeps the tool list clean.
 
 Hermes discovers MCP servers at startup and registers their tools into the normal tool registry.
 
+CLI agent construction waits up to `mcp_discovery_timeout` (default 1.5 seconds), or
+`mcp_single_query_discovery_timeout` (default 15 seconds) for `-q`/`-z` sessions. If an enabled,
+selected server is still unavailable, the session prints its name and failure reason to stderr,
+including in quiet oneshot mode; stdout remains the final response. Run `hermes mcp test <name>`
+to diagnose a failure. For slow cold starts, increase the corresponding timeout in `config.yaml`
+and start a new session. Disabled servers and servers registered for lazy start are not failures.
+
 Servers are connected at most **4 at a time** per discovery pass (startup, `/reload-mcp`, config
 watcher). Every stdio server spawns its own child-process tree, so an unbounded pass with many servers
 used to launch them all in the same instant — a CPU/RAM spike and, on multi-profile fleets, a burst of
