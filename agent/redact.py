@@ -542,6 +542,10 @@ _URL_BARE_TOKEN_RE = re.compile(
 # JWTs always start with "eyJ" (base64 "{"); 1-, 2- and 3-part forms.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 
+# Signature envelopes are round-trip data, even when their base64 resembles a JWT or key.
+# Only complete, explicitly delimited sig1 tokens are opaque; surrounding text still redacts.
+_OPAQUE_SIGNATURE_RE = re.compile(r"(\[sig1:[A-Za-z0-9+/_-]+={0,2}\])")
+
 # E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
@@ -917,6 +921,18 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     text = redact_registered_vault_values(text)
     if not (force or _redact_enabled()):
         return text
+    parts = _OPAQUE_SIGNATURE_RE.split(text)
+    return "".join(
+        part if index % 2 else _redact_sensitive_span(
+            part, code_file=code_file, file_read=file_read, secret_file=secret_file,
+            redact_url_credentials=redact_url_credentials)
+        for index, part in enumerate(parts)
+    )
+
+
+def _redact_sensitive_span(text: str, *, code_file: bool, file_read: bool,
+                           secret_file: bool, redact_url_credentials: bool) -> str:
+    """Redact the text between opaque signature tokens."""
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not
     # be silently fail-open because another flag (code_file, or file_read implying it) was also set.
     code_file = (code_file or file_read) and not secret_file

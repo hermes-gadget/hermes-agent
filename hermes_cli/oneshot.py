@@ -16,7 +16,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
@@ -306,6 +306,7 @@ def run_oneshot(
                 resume=resume,
                 reasoning=reasoning,
                 ledger=bool(usage_file),
+                report_mcp_error=lambda message: print(message, file=real_stderr, flush=True),
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -507,6 +508,7 @@ def _run_agent(
     resume: Optional[str] = None,
     reasoning: object = None,
     ledger: bool = False,
+    report_mcp_error: Optional[Callable[[str], None]] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap. *ledger* (set when
@@ -563,7 +565,8 @@ def _run_agent(
     # ONE turn and no between-turns late-binding refresh (#38448).
     from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
 
-    ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
+    ensure_mcp_discovery_before_agent_build(
+        logger=logging.getLogger(__name__), single_query=True, report_error=report_mcp_error)
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
 

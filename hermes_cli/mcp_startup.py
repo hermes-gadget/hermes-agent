@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 import threading
 from contextlib import contextmanager, nullcontext
 from contextvars import copy_context
-from typing import Dict, Iterator, Optional, Set
+from typing import Callable, Dict, Iterator, Optional, Set
 
 from hermes_constants import hermes_home_key
 
@@ -305,15 +306,51 @@ def ensure_mcp_discovery_before_agent_build(
     logger,
     timeout: "float | None" = None,
     single_query: bool = False,
+    report_error: Optional[Callable[[str], None]] = None,
     thread_name: str = "cli-mcp-discovery") -> None:
-    """Give configured MCP tools a bounded chance to register before AIAgent.
+    """Wait a bounded time for MCP tools, then report each unavailable server to the session.
 
     Non-interactive first turns (``chat -q``, ``hermes -z``) can construct ``AIAgent`` before any
     path started discovery, and ``wait_for_mcp_discovery()`` only joins an existing thread — so
-    start discovery if needed, then wait up to the configured bound.
+    start discovery if needed, then wait up to the configured bound. Logging alone is insufficient:
+    normal CLI logging is file-only and oneshot suppresses it. ``report_error`` lets oneshot write
+    to its saved stderr while the rest of agent construction is silenced.
     """
+    messages = []
     try:
         start_background_mcp_discovery(logger=logger, thread_name=thread_name)
+        timeout = _resolve_discovery_timeout(timeout, single_query=single_query)
         wait_for_mcp_discovery(timeout=timeout, single_query=single_query)
-    except Exception:
+        if not _has_configured_mcp_servers():
+            return
+        from tools.mcp_tool_discovery import get_mcp_status
+
+        in_flight = mcp_discovery_in_flight()
+        timeout_key = "mcp_single_query_discovery_timeout" if single_query else "mcp_discovery_timeout"
+        for entry in get_mcp_status():
+            if entry.get("disabled") or _discovery_registered_servers([entry]):
+                continue
+            name = entry["name"]
+            if _mcp_server_filter is not None and name not in _mcp_server_filter:
+                continue
+            reason = entry.get("error") or (
+                f"discovery did not finish within the {timeout:g}s startup wait"
+                if in_flight else "discovery finished without registering the server")
+            remedy = f"Run `hermes mcp test {shlex.quote(name)}` to diagnose it."
+            if in_flight:
+                remedy += f" For a slow cold start, increase `{timeout_key}` in config.yaml."
+            messages.append(f"Failed to start MCP server {name!r} for this session: {reason}. "
+                            f"{remedy} Start a new session after resolving it.")
+    except Exception as exc:
         logger.debug("MCP discovery readiness check failed before agent build", exc_info=True)
+        messages.append(f"MCP discovery failed before session startup: {exc}. Run `hermes mcp list` "
+                        "and `hermes mcp test <server>` to diagnose it.")
+
+    from agent.redact import redact_sensitive_text
+    for message in messages:
+        message = redact_sensitive_text(" ".join(message.split()), force=True)
+        logger.warning("%s", message)
+        if report_error is None:
+            print(message, file=sys.stderr, flush=True)
+        else:
+            report_error(message)
