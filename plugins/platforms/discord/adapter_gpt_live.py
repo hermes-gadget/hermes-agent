@@ -161,11 +161,11 @@ class DiscordGptLiveMixin(LiveBackendMixin):
                             LiveVoiceLease.release(home, owner)
                             self._gpt_live_leases.pop(gid, None)
 
-    async def _gpt_live_notice(self, text_id):
+    async def _gpt_live_notice(self, text_id, message=None):
         try:
             channel = self._client.get_channel(int(text_id))
             if channel:
-                await channel.send("Live voice is unavailable. Check the gateway log and OpenAI project access.")
+                await channel.send(message or "Live voice is unavailable. Check the gateway log and OpenAI project access.")
         except Exception:
             logger.warning("Could not post GPT-Live status to its text channel")
 
@@ -187,12 +187,18 @@ class DiscordGptLiveMixin(LiveBackendMixin):
         if self._gpt_live_sessions.get(session.guild_id) is session:
             self._gpt_live_spawn(self._gpt_live_handle_end(session, reason))
 
+    def _gpt_live_receive_failed(self, session):
+        # Called on the event loop, never the UDP reader thread. Ignore a late
+        # failure from a receiver belonging to a call that already ended.
+        if self._gpt_live_sessions.get(session.guild_id) is session and not session.close_requested:
+            self._gpt_live_spawn(self._gpt_live_handle_end(session, "microphone_transport"))
+
     async def _gpt_live_handle_end(self, session, reason):
         gid = session.guild_id
         # This task may have been queued during a failed startup that already retried.
         if self._gpt_live_sessions.get(gid) is not session:
             return
-        reconnect = (reason == "transport" and gid not in self._gpt_live_retried
+        reconnect = (reason in {"transport", "microphone_transport"} and gid not in self._gpt_live_retried
                      and gid in self._gpt_live_wanted and not session.close_requested)
         if reconnect:
             self._gpt_live_retried.add(gid)
@@ -203,6 +209,9 @@ class DiscordGptLiveMixin(LiveBackendMixin):
             await asyncio.sleep(2)
             if gid in self._gpt_live_wanted and self._gpt_live_member_present(session.voice_channel):
                 await self._start_gpt_live(session.voice_channel, attempts=1)
+        elif reason == "microphone_transport":
+            await self._gpt_live_notice(session.chat_id,
+                "I couldn't receive your microphone audio after reconnecting. Please leave and rejoin the voice channel.")
 
     async def _shutdown_gpt_live(self):
         if not hasattr(self, "_gpt_live_tasks"):

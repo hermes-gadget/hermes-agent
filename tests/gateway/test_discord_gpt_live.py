@@ -78,6 +78,81 @@ def test_receiver_only_forwards_mapped_allowed_audio_and_never_buffers_live():
     assert not receiver._decoders
 
 
+def test_receiver_tracks_replaced_transport_key_and_dave_session(monkeypatch):
+    import nacl.secret
+    import sys
+    # The transport test uses a fake DAVE boundary, including its media enum.
+    monkeypatch.setitem(sys.modules, 'davey', SimpleNamespace(MediaType=SimpleNamespace(audio=0)))
+    monkeypatch.setattr(discord_adapter_module, 'discord', SimpleNamespace(opus=SimpleNamespace(
+        Decoder=lambda: SimpleNamespace(decode=lambda data: bytes(3840)))))
+    frames, decrypted_by = [], []
+    def dave(name):
+        def decrypt(uid, kind, data):
+            decrypted_by.append(name)
+            return data
+        return SimpleNamespace(decrypt=decrypt)
+    conn = SimpleNamespace(secret_key=list(bytes(32)), dave_session=dave('initial'),
+                           ssrc=9, mode='aead_xchacha20_poly1305_rtpsize',
+                           hook=None, add_socket_listener=MagicMock(), remove_socket_listener=MagicMock())
+    receiver = VoiceReceiver(SimpleNamespace(_connection=conn),
+        stream_callback=lambda uid, pcm: frames.append((uid, pcm)),
+        stream_user_ids={22}, utterance_capture=False)
+    receiver.start()
+    receiver.map_ssrc(100, 22)
+    for seq, flags in enumerate([0x80, 0x90, 0x91]):
+        # Exercise normal headers, extensions, CSRCs, then a second rekey.
+        conn.secret_key = list(bytes([seq + 1]) * 32)
+        conn.dave_session = dave(str(seq))
+        header = struct.pack('>BBHII', flags, 0x78, seq, 960 * seq, 100)
+        if flags & 1:
+            header += struct.pack('>I', 55)
+        extension = b''
+        if flags & 0x10:
+            header += struct.pack('>HH', 0xbede, 1)
+            extension = bytes(4)
+        nonce = struct.pack('>I', seq) + bytes(20)
+        encrypted = nacl.secret.Aead(bytes(conn.secret_key)).encrypt(
+            extension + b'\xf8\xff\xfe', header, nonce).ciphertext
+        receiver._on_packet(header + encrypted + nonce[:4])
+    receiver.stop()
+    assert len(frames) == 3 and all(uid == 22 and len(pcm) == 3840 for uid, pcm in frames)
+    assert decrypted_by == ['0', '1', '2']
+    assert receiver._stream_stats['transport_errors'] == 0
+
+
+def test_receiver_recovers_only_after_sustained_allowed_decode_failures(monkeypatch):
+    import nacl.secret
+    now, failures, frames = [0.0], [], []
+    monkeypatch.setattr(discord_adapter_module.time, 'monotonic', lambda: now[0])
+    key = bytes(32)
+    conn = SimpleNamespace(secret_key=list(key), dave_session=None, ssrc=9,
+                           mode='aead_xchacha20_poly1305_rtpsize')
+    receiver = VoiceReceiver(SimpleNamespace(_connection=conn),
+        stream_callback=lambda uid, pcm: frames.append(pcm), stream_user_ids={22},
+        utterance_capture=False, decode_failure_callback=lambda: failures.append(True))
+    receiver._running = True
+    receiver.map_ssrc(100, 22)
+    header = struct.pack('>BBHII', 0x80, 0x78, 1, 960, 100)
+    nonce = bytes(24)
+    good = header + nacl.secret.Aead(key).encrypt(b'\xf8\xff\xfe', header, nonce).ciphertext + nonce[:4]
+    bad = good[:-5] + bytes([good[-5] ^ 1]) + good[-4:]
+    for _ in range(60):
+        receiver._on_packet(bad)
+    assert not failures  # A brief burst does not reconnect.
+    receiver._on_packet(good)
+    now[0] = 5
+    receiver._on_packet(bad)
+    assert not failures  # A decoded frame reset the failure window.
+    for _ in range(60):
+        now[0] += 0.05
+        receiver._on_packet(bad)
+    assert failures == [True] and len(frames) == 1
+    now[0] += 30
+    for _ in range(60):
+        receiver._on_packet(bad)
+    assert failures == [True]  # At most one recovery per receiver.
+
+
 def adapter():
     return DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
@@ -358,7 +433,8 @@ async def test_config_keys_and_usage_remain_in_their_own_profile(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconnect(monkeypatch):
+@pytest.mark.parametrize('failure', ['transport', 'microphone_transport'])
+async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconnect(monkeypatch, failure):
     monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
     drops = [asyncio.Event(), asyncio.Event()]
     started = [asyncio.Event(), asyncio.Event()]
@@ -370,8 +446,18 @@ async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconn
         await ws.recv()
         await ws.send(json.dumps({"type": "session.started", "session": {"id": f"fake_{index}"}}))
         started[index].set()
-        await drops[index].wait()
-        await ws.close()
+        async def drop():
+            await drops[index].wait()
+            await ws.close()
+        dropping = asyncio.create_task(drop())
+        try:
+            async for raw in ws:
+                if json.loads(raw)['type'] == 'session.close':
+                    await ws.send(json.dumps({'type': 'session.closed'}))
+                    break
+        finally:
+            dropping.cancel()
+            await asyncio.gather(dropping, return_exceptions=True)
 
     a = adapter()
     member = SimpleNamespace(id=22, voice=None)
@@ -379,7 +465,7 @@ async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconn
     channel = SimpleNamespace(id=33, guild=guild)
     member.voice = SimpleNamespace(channel=channel)
     bot = SimpleNamespace(id=999, guild=guild)
-    a._client = SimpleNamespace(user=bot)
+    a._client = SimpleNamespace(user=bot, get_channel=lambda _: None)
     a._is_allowed_user = MagicMock(return_value=True)
     a._gpt_live_wanted.add(1)
     async def join(*args, **kwargs):
@@ -392,17 +478,31 @@ async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconn
     async with websockets.serve(serve, "127.0.0.1", 0) as server:
         a._gpt_live_cfg = config(ws_url=f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}")
         await a._start_gpt_live(channel)
-        drops[0].set()
+        if failure == 'transport':
+            drops[0].set()
+        else:
+            a._gpt_live_receive_failed(a._gpt_live_sessions[1])
         await asyncio.wait_for(started[1].wait(), 8)
         async with asyncio.timeout(5):
             while not a._gpt_live_sessions[1].is_live:
                 await asyncio.sleep(0.01)
         second = a._gpt_live_sessions[1]
-        drops[1].set()
+        if failure == 'transport':
+            drops[1].set()
+        else:
+            # A late notification from the original receiver cannot close the
+            # replacement call, and a second real failure cannot loop forever.
+            original = SimpleNamespace(guild_id=1, close_requested=False)
+            a._gpt_live_receive_failed(original)
+            assert a._gpt_live_sessions[1] is second
+            a._gpt_live_receive_failed(second)
         async with asyncio.timeout(5):
-            await second._receiver
+            if failure == 'transport':
+                await second._receiver
             while a._gpt_live_tasks:
                 await asyncio.sleep(0.01)
+        for drop in drops:
+            drop.set()
     assert len(connections) == 2 and a.join_voice_channel.await_count == 2
     assert not a._gpt_live_sessions and not a._gpt_live_wanted
 
