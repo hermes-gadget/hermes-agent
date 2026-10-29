@@ -98,3 +98,18 @@ Real-client acceptance must cover Element Web/Desktop and Element X: incoming
 call, tools/memory and final text, interruption, hangup/redial, Discord busy,
 cellular access and TCP media fallback. Automated native/reference-client tests
 do not establish those results for a user's actual installed clients.
+
+## Multiple jobs during a call
+
+Both Matrix and Discord use the shared voice coordinator. Independent voice
+requests can remain pending concurrently (up to four), with replies matched to
+their own request. For substantial work, Hermes is instructed to use native
+background subagents, acknowledge confirmed dispatch, and return to the
+conversation while the jobs run. Existing delegation limits and approval rules
+still apply; quick answers can be handled directly.
+
+Background completion reports are spoken once as separate updates, including
+when another request is pending. They are restricted to the same authorized
+user, profile, and conversation. A completion already queued for an old call
+will not jump to a redialed call. Jobs belong to the conversation and continue
+after hangup; their normal text results remain available.

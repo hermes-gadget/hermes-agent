@@ -137,6 +137,10 @@ class MessageEvent:
     # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
+    # Independent work must wait for its own turn rather than steering or
+    # interrupting the active task. Authorization and control-command handling
+    # still apply; this only overrides busy admission for this one event.
+    queue_only: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

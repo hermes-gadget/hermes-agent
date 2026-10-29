@@ -30,7 +30,10 @@ BACKEND_STATUS_INSTRUCTIONS = (
     "overall backend reply is ready. Use the latest update for each task: a pending final "
     "reply does not mean that no action has been taken. If Ben asks for an action's status "
     "and it is unknown, say you are waiting for an update and delegate a status check. Do not guess "
-    "that work has not started or repeat an outdated status."
+    "that work has not started or repeat an outdated status. You can accept new independent "
+    "requests while earlier backend work continues. Do not tell Ben he must wait for one job "
+    "before asking for another. Keep each job's status distinct. Background task updates "
+    "refer to that work, not to the most recent request."
 )
 
 class GptLiveUnavailable(RuntimeError):
@@ -77,6 +80,7 @@ class LiveVoiceSession:
     CLOSE_TIMEOUT = 15
     TRANSCRIPT_SETTLE_SECONDS = 0.25
     TRANSCRIPT_MAX_WAIT_SECONDS = 1.5
+    MAX_PARALLEL_REQUESTS = 4
 
     def __init__(self, adapter, call_id, chat_id, cfg, *, mixer, dispatch,
                  input_to_pcm24, output_from_pcm24, input_frame_bytes=2, usage_context=None):
@@ -87,6 +91,7 @@ class LiveVoiceSession:
         self._input_frame_bytes = input_frame_bytes
         self._usage_context = dict(usage_context or {})
         self.home = Path(get_hermes_home())
+        self.backend_session_key = None
         self.loop = asyncio.get_running_loop()
         self.close_requested = False
         self.close_requested_reason = None
@@ -114,7 +119,7 @@ class LiveVoiceSession:
         self._transcript_size = 0
         self._transcript_seq = self._consumed_seq = 0
         self._last_transcript_at = 0.0
-        self.pending = None
+        self.pending: dict[str, PendingDelegation] = {}
         self.dropped_frames = self.delegations = 0
         self.input_frames = self.sent_audio_frames = self.output_audio_bytes = 0
         self.first_audio_ms = []
@@ -341,12 +346,19 @@ class LiveVoiceSession:
         if delegation_id in self._backend_completed:
             return
         self._backend_completed.add(delegation_id)
-        if self.pending and self.pending.id == delegation_id and not self.pending.future.done():
-            self.pending.future.set_result(content)
+        pending = self.pending.get(delegation_id)
+        if pending and not pending.future.done():
+            pending.future.set_result(content)
         else:
             # A timed-out turn may finish while a newer request is pending. Keep
             # its result as context for its OWN task without completing the new one.
             self.feed_backend_progress(content, delegation_id, final=True)
+
+    def feed_background_result(self, content):
+        # Conversation-owned jobs may finish after their original voice request
+        # was acknowledged. Unsolicited commentary never resolves a request.
+        if self.is_live and content.strip():
+            self.loop.call_soon_threadsafe(self._enqueue_backend_update, None, content, True)
 
     def feed_backend_progress(self, content, delegation_id, *, final=False):
         if self.is_live and delegation_id in self._seen and content.strip():
@@ -363,6 +375,12 @@ class LiveVoiceSession:
         try:
             while True:
                 did, content, final = await self._backend_updates.get()
+                if did is None:
+                    if self.cfg.summarize_for_voice:
+                        from gateway.voice_summary import summarize_for_voice
+                        content = await summarize_for_voice(content)
+                    await self._commentary(None, "Update on background work: " + content)
+                    continue
                 for chunk in commentary_chunks(content):
                     if did in self._backend_completed and not final:
                         break
@@ -382,44 +400,61 @@ class LiveVoiceSession:
             await self._send({"type": "session.commentary.append", "delegation_id": did, "content": chunk})
 
     async def _delegation_worker(self):
-        while True:
-            did, through_seq, created_at = await self._delegations.get()
-            try:
+        active = set()
+
+        def finished(task):
+            active.discard(task)
+            if not task.cancelled() and task.exception():
+                logger.warning("GPT-Live request delivery failed (%s)", type(task.exception()).__name__)
+                self._ended("transport")
+
+        try:
+            while True:
+                if len(active) >= self.MAX_PARALLEL_REQUESTS:
+                    await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
+                did, through_seq, created_at = await self._delegations.get()
+                # Reserve transcript boundaries in order; backend replies may
+                # finish in any order. The gateway still serializes its parent
+                # conversation, while native background subagents do the work.
                 text = await self._settled_request(through_seq)
                 if len(text) < 2:
                     await self._commentary(did, "I didn't catch that — could you say it again?")
                     continue
-                self.delegations += 1
-                pending = PendingDelegation(did, self.loop.create_future())
-                self.pending = pending  # Register BEFORE dispatch: fast replies cannot be lost.
-                token = DELEGATION_CONTEXT.set((self, did))
-                try:
-                    await self._dispatch(text)
-                finally:
-                    DELEGATION_CONTEXT.reset(token)
-                result = await asyncio.wait_for(asyncio.shield(pending.future), self.cfg.reply_timeout_seconds)
-                if self.cfg.summarize_for_voice:
-                    from gateway.voice_summary import summarize_for_voice
-                    result = await summarize_for_voice(result)
-                self._awaiting_audio = created_at
-                await self._commentary(did, result)
-            except TimeoutError:
-                await self._commentary(did, "That's taking longer than expected — I'll keep working on it.")
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("GPT-Live delegation failed (%s)", type(exc).__name__)
-                if self.is_live:
-                    try:
-                        await self._commentary(did, "I hit an error while working on that.")
-                    except Exception:
-                        self._ended("transport")
-                        return
-            finally:
-                if self.pending:
-                    if not self.pending.future.done():
-                        self.pending.future.cancel()
-                    self.pending = None
+                task = asyncio.create_task(self._run_delegation(did, text, created_at))
+                active.add(task)
+                task.add_done_callback(finished)
+        finally:
+            for task in active:
+                task.cancel()
+            await asyncio.gather(*active, return_exceptions=True)
+
+    async def _run_delegation(self, did, text, created_at):
+        self.delegations += 1
+        pending = PendingDelegation(did, self.loop.create_future())
+        self.pending[did] = pending  # Register BEFORE dispatch: fast replies cannot be lost.
+        token = DELEGATION_CONTEXT.set((self, did))
+        try:
+            await self._dispatch(text)
+            result = await asyncio.wait_for(asyncio.shield(pending.future), self.cfg.reply_timeout_seconds)
+            if self.cfg.summarize_for_voice:
+                from gateway.voice_summary import summarize_for_voice
+                result = await summarize_for_voice(result)
+            self._awaiting_audio = created_at
+            await self._commentary(did, result)
+        except TimeoutError:
+            await self._commentary(did, "That's taking longer than expected — I'll keep working on it.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("GPT-Live delegation failed (%s)", type(exc).__name__)
+            if self.is_live:
+                await self._commentary(did, "I hit an error while working on that.")
+        finally:
+            DELEGATION_CONTEXT.reset(token)
+            if not pending.future.done():
+                pending.future.cancel()
+            if self.pending.get(did) is pending:
+                self.pending.pop(did)
 
     async def _watchdog(self):
         while True:
