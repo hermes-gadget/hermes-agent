@@ -303,7 +303,7 @@ class GatewayVoiceMixin:
         return source
 
     async def _handle_voice_channel_input(
-        self, guild_id: int, user_id: int, transcript: str, *, adapter=None
+        self, guild_id: int, user_id: int, transcript: str, *, adapter=None, echo_transcript: bool = True
     ):
         """Handle transcribed voice from a voice channel. ``adapter`` captured the audio; under
         multiplexing each profile's bot dispatches through its own adapter, never the default's."""
@@ -342,12 +342,13 @@ class GatewayVoiceMixin:
                         guild_id, user_id, transcript[:100])
             return
         # Echo the transcript into the text channel (after auth, with mention sanitization).
-        with suppress(Exception):
-            channel = adapter._client.get_channel(text_ch_id)
-            if channel:
-                safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone")
-                safe_text = safe_text.replace("@here", "@\u200bhere")
-                await channel.send(t("gateway.voice.transcript_echo", user=user_id, text=safe_text))
+        if echo_transcript:
+            with suppress(Exception):
+                channel = adapter._client.get_channel(text_ch_id)
+                if channel:
+                    safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone")
+                    safe_text = safe_text.replace("@here", "@\u200bhere")
+                    await channel.send(t("gateway.voice.transcript_echo", user=user_id, text=safe_text))
         # Bound text channel's channel_prompt and skills: voice input gets the same per-channel
         # context, and a first spoken turn opens the session, the only point skills load.
         # A thread inherits its parent's bindings, as its typed messages do.

@@ -38,12 +38,25 @@ class DiscordGptLiveMixin:
     def _gpt_live_tap_reply(self, chat_id, content, metadata):
         if not (content or "").strip() or not metadata or not metadata.get("notify") or metadata.get("_interim_send"):
             return
+        context = self._gpt_live_reply_context(chat_id)
+        if context:
+            session, did = context
+            session.complete_pending(content, did)
+
+    def _gpt_live_reply_context(self, chat_id):
         context = DELEGATION_CONTEXT.get()
         if context:
             session, did = context
             if (session.text_channel_id == str(chat_id)
                     and getattr(self, "_gpt_live_sessions", {}).get(session.guild_id) is session):
-                session.complete_pending(content, did)
+                return context
+
+    def on_assistant_commentary(self, chat_id, content):
+        super().on_assistant_commentary(chat_id, content)
+        context = self._gpt_live_reply_context(chat_id)
+        if context:
+            session, did = context
+            session.feed_backend_progress(content, did)
 
     def _gpt_live_text_failure(self, chat_id):
         sessions = [s for s in getattr(self, "_gpt_live_sessions", {}).values()

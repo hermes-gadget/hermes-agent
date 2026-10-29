@@ -1996,6 +1996,13 @@ class BasePlatformAdapter(ABC):
     # ── Structured stream-event rendering (gateway/stream_events.py): presentation-only,
     # nothing rendered here is persisted, so what an adapter "eats" never changes history.
 
+    def on_assistant_commentary(self, chat_id: str, content: str) -> None:
+        """Observe a complete public interim message, including already-streamed text.
+
+        Called from the agent worker thread; implementations must not block it.
+        This observer does not replace text rendering or receive private reasoning.
+        """
+
     def render_message_event(self, event: Any, sink: Any) -> None:
         """Render a MessageChunk / MessageStop / Commentary onto the sink (a
         GatewayStreamConsumer), mapping 1:1 onto its existing primitives."""

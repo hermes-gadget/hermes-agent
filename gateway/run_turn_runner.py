@@ -334,6 +334,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # as delivered only when a viewer or observer actually took it.
                 payload = {"text": text, "already_streamed": False}
                 unseen = not self._publish_execution("message.interim", payload)
+            observer = getattr(ctx._status_adapter, "on_assistant_commentary", None)
+            if callable(observer):
+                observer(ctx._status_chat_id, text)
             if stts is not None:
                 # Flush accepted deltas; completed commentary is a separate speech segment.
                 stts.on_delta(None)
