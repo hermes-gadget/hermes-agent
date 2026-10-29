@@ -18,6 +18,7 @@ class DiscordGptLiveMixin:
         self._gpt_live_wanted = set()
         self._gpt_live_tasks = set()
         self._gpt_live_retried = set()
+        self._gpt_live_connecting = set()
 
     def _gpt_live_spawn(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -115,7 +116,8 @@ class DiscordGptLiveMixin:
         was = bool(before.channel and str(before.channel.id) == cfg.voice_channel_id)
         now = bool(after.channel and str(after.channel.id) == cfg.voice_channel_id)
         if member.id == self._client.user.id:
-            if was and not now and gid in self._gpt_live_sessions:
+            if (was and not now and gid in self._gpt_live_sessions
+                    and gid not in self._gpt_live_connecting):
                 self._gpt_live_request_stop(gid, "bot_moved")
             return
         if str(member.id) != cfg.user_id:
@@ -132,6 +134,8 @@ class DiscordGptLiveMixin:
         session = self._gpt_live_sessions.get(guild_id)
         if session:
             session.close_requested = True
+            session.close_requested_reason = reason
+            logger.info("GPT-Live close requested (guild=%s reason=%s)", guild_id, reason)
         self._gpt_live_spawn(self._stop_gpt_live(guild_id, reason))
 
     async def _start_gpt_live(self, channel, *, attempts=2):
@@ -150,7 +154,11 @@ class DiscordGptLiveMixin:
                 self._gpt_live_sessions[gid] = session
                 self._voice_text_channels[gid] = int(text_id)
                 try:
-                    joined = await self.join_voice_channel(channel, text_channel_id=int(text_id), live_mode=True)
+                    self._gpt_live_connecting.add(gid)
+                    try:
+                        joined = await self.join_voice_channel(channel, text_channel_id=int(text_id), live_mode=True)
+                    finally:
+                        self._gpt_live_connecting.discard(gid)
                     if not joined:
                         raise RuntimeError("Discord voice connection failed")
                     session.mixer = self._voice_mixers[gid]
@@ -168,7 +176,9 @@ class DiscordGptLiveMixin:
                         if self._gpt_live_member_present(channel) and gid in self._gpt_live_wanted:
                             continue
                     await self._gpt_live_notice(text_id)
-                await session.close("start_failed" if gid in self._gpt_live_wanted else "user_left")
+                reason = session.close_requested_reason or (
+                    "start_failed" if gid in self._gpt_live_wanted else "user_left")
+                await session.close(reason)
                 self._gpt_live_sessions.pop(gid, None)
                 await self.leave_voice_channel(gid)
                 return

@@ -149,6 +149,7 @@ class GptLiveSession:
         self.home = Path(get_hermes_home())
         self.loop = asyncio.get_running_loop()
         self.close_requested = False
+        self.close_requested_reason = None
         self._closing = False
         self._ready, self.finalized = asyncio.Event(), asyncio.Event()
         self._close_lock, self._send_lock = asyncio.Lock(), asyncio.Lock()
@@ -172,6 +173,7 @@ class GptLiveSession:
         self._last_transcript_at = 0.0
         self.pending = None
         self.dropped_frames = self.delegations = 0
+        self.input_frames = self.sent_audio_frames = self.output_audio_bytes = 0
         self.first_audio_ms = []
         self._awaiting_audio = None
 
@@ -227,6 +229,9 @@ class GptLiveSession:
     def _enqueue_audio(self, pcm):
         if not self.is_live:
             return
+        self.input_frames += 1
+        if self.input_frames == 1:
+            logger.info("GPT-Live microphone PCM received (guild=%s bytes=%d)", self.guild_id, len(pcm))
         import numpy as np
         samples = np.frombuffer(pcm[:len(pcm) // 2 * 2], "<i2").astype(np.float32)
         if samples.size and float(np.mean(samples * samples)) > 300 ** 2:
@@ -248,14 +253,32 @@ class GptLiveSession:
                 self.buffer.flush()
 
     async def _send_audio_worker(self):
+        # Discord stops RTP when its client VAD goes quiet. Live requires a
+        # continuous, paced stream, including silence, to advance its audio clock.
+        pending = bytearray()
+        deadline = self.loop.time()
         try:
             while True:
-                pcm = self._input_remainder + await self._audio.get()
-                length = len(pcm) // 8 * 8
-                self._input_remainder = pcm[length:]
-                if length:
-                    await self._send({"type": "session.input_audio.append",
-                                      "audio": base64.b64encode(pcm48_stereo_to_pcm24_mono(pcm[:length])).decode("ascii")})
+                delay = deadline - self.loop.time()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                while not self._audio.empty():
+                    pcm = self._input_remainder + self._audio.get_nowait()
+                    length = len(pcm) // 8 * 8
+                    self._input_remainder = pcm[length:]
+                    if length:
+                        pending.extend(pcm48_stereo_to_pcm24_mono(pcm[:length]))
+                if len(pending) > 96000:
+                    dropped = (len(pending) - 96000 + 959) // 960
+                    del pending[:dropped * 960]
+                    self.dropped_frames += dropped
+                frame = bytes(pending[:960])
+                del pending[:960]
+                await self._send({"type": "session.input_audio.append",
+                                  "audio": base64.b64encode(frame.ljust(960, b"\0")).decode("ascii")})
+                self.sent_audio_frames += 1
+                # Never catch up a stalled socket with a burst of stale frames.
+                deadline = max(deadline + 0.02, self.loop.time())
         except Exception as exc:
             logger.warning("GPT-Live audio send failed (%s)", type(exc).__name__)
             self._ended("transport")
@@ -318,6 +341,9 @@ class GptLiveSession:
         length = len(pcm) // 2 * 2
         self._output_remainder = pcm[length:]
         if length:
+            if not self.output_audio_bytes:
+                logger.info("GPT-Live output PCM received (guild=%s)", self.guild_id)
+            self.output_audio_bytes += length
             self.buffer.feed(pcm24_mono_to_pcm48_stereo(pcm[:length]))
             if self._awaiting_audio is not None:
                 self.first_audio_ms.append(round((time.monotonic() - self._awaiting_audio) * 1000, 1))
@@ -443,6 +469,8 @@ class GptLiveSession:
             "model": self.cfg.model, "reason": reason, "usage_confirmed": self.finalized.is_set(),
             "first_audio_ms_p50": statistics.median(self.first_audio_ms) if self.first_audio_ms else None,
             "delegations": self.delegations, "dropped_frames": self.dropped_frames,
+            "input_frames": self.input_frames, "sent_audio_frames": self.sent_audio_frames,
+            "output_audio_bytes": self.output_audio_bytes,
         }
         try:
             path = self.home / "logs" / "gpt-live-usage.jsonl"
