@@ -172,8 +172,9 @@ async def test_fake_live_server_delegates_pcm_and_finalizes_usage_once(tmp_path,
                 break
 
     a = adapter()
-    async def handle(gid, uid, text, *, adapter):
+    async def handle(gid, uid, text, *, adapter, echo_transcript):
         assert (gid, uid, text) == (1, 22, "what's the weather")
+        assert echo_transcript is False
         context = DELEGATION_CONTEXT.get()
         context[0].complete_pending("Sunny.", context[1])
     a.gateway_runner = SimpleNamespace(_handle_voice_channel_input=handle)
@@ -451,7 +452,8 @@ async def test_disconnect_waits_for_server_final_usage(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streamed", [False, True])
-async def test_gateway_ingress_keeps_full_discord_log_and_taps_only_final(streamed):
+@pytest.mark.parametrize("echo_transcript", [False, True])
+async def test_gateway_ingress_preserves_replies_with_optional_transcript_echo(streamed, echo_transcript):
     a = adapter()
     posted, edited = [], []
     async def post(*args, **kwargs):
@@ -491,16 +493,131 @@ async def test_gateway_ingress_keeps_full_discord_log_and_taps_only_final(stream
     a.set_message_handler(agent)
     token = DELEGATION_CONTEXT.set((session, "one"))
     try:
-        await runner._handle_voice_channel_input(1, 22, "Check the weather", adapter=a)
+        await runner._handle_voice_channel_input(
+            1, 22, "Check the weather", adapter=a, echo_transcript=echo_transcript)
     finally:
         DELEGATION_CONTEXT.reset(token)
     # This path creates the real delivery ledger and can wait for filesystem I/O.
     answer = await asyncio.wait_for(asyncio.shield(session.pending.future), 30)
     await asyncio.gather(*tuple(a._background_tasks))
     assert answer == "Sunny."
-    assert any("Check the weather" in text for text in posted)
+    assert any("Check the weather" in text for text in posted) is echo_transcript
     assert "Checking the weather" in posted
     assert "Sunny." in (edited if streamed else posted)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True])
+async def test_backend_progress_reaches_live_before_the_final_reply(monkeypatch, streamed):
+    from gateway.config import Platform, StreamingConfig
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.stream_consumer import StreamConsumerConfig
+    from gateway.turn_context import TurnContext
+
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
+    progress_received, finish_backend, final_received = (asyncio.Event() for _ in range(3))
+    accepted, posted, consumers, tasks = [], [], [], []
+    progress = "The example jobs are finished. I am checking the cause."
+
+    async def serve(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"type": "session.started", "session": {"id": "fake_live"}}))
+        await ws.send(json.dumps({"type": "session.input_transcript.delta", "delta": "Check the example jobs"}))
+        await ws.send(json.dumps({"type": "session.delegation.created", "delegation": {"id": "one", "target": "client"}}))
+        async for raw in ws:
+            event = json.loads(raw)
+            accepted.append(event)
+            if event["type"] == "session.thinking.append" and progress in event["content"]:
+                progress_received.set()
+            elif event["type"] == "session.commentary.append":
+                final_received.set()
+            elif event["type"] == "session.close":
+                await ws.send(json.dumps({"type": "session.closed", "usage": {"seconds": 0}}))
+                break
+
+    a = adapter()
+    async def post(*args, **kwargs):
+        posted.append(args[0] if args else kwargs["content"])
+        return SimpleNamespace(id=444)
+    channel = SimpleNamespace(send=AsyncMock(side_effect=post),
+                              get_partial_message=lambda _: SimpleNamespace(edit=AsyncMock()))
+    a._client = SimpleNamespace(get_channel=lambda _: channel)
+    a._resolve_channel = AsyncMock(return_value=channel)
+    a._record_response_async = AsyncMock(side_effect=lambda _, result, *args: result)
+    a._reply_to_mode = "off"
+
+    async def handle(gid, uid, text, *, adapter, echo_transcript):
+        ctx = TurnContext(
+            source=SimpleNamespace(platform=Platform.DISCORD, chat_id="33"), user_config={},
+            resolve_display_setting=lambda *args: streamed, interim_assistant_messages_enabled=True,
+            _status_adapter=a, _status_chat_id="33", _run_still_current=lambda: True,
+        )
+        runner = SimpleNamespace(
+            config=SimpleNamespace(streaming=StreamingConfig(enabled=streamed)), _delivery_adapter_for=lambda _: a,
+            _build_stream_consumer_config=lambda *args, **kwargs: (StreamConsumerConfig(edit_interval=0.01), None),
+        )
+        consumer, delta, interim, _ = TurnRunner(runner, ctx)._setup_stream_consumer("discord")
+        consumers.append(consumer)
+        tasks.append(asyncio.create_task(consumer.run()))
+        def narrate():
+            if streamed:
+                delta(progress)
+            interim(progress, already_streamed=streamed)
+        await asyncio.to_thread(narrate)
+        await finish_backend.wait()
+        session, did = DELEGATION_CONTEXT.get()
+        session.complete_pending("The diagnosis is finished.", did)
+        consumer.finish("The diagnosis is finished.")
+
+    a.gateway_runner = SimpleNamespace(_handle_voice_channel_input=handle)
+    async with websockets.serve(serve, "127.0.0.1", 0) as server:
+        session = GptLiveSession(a, 1, None, "33", config(
+            ws_url=f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"), VoiceMixer())
+        a._gpt_live_sessions[1] = session
+        try:
+            await session.start()
+            await asyncio.wait_for(progress_received.wait(), 5)
+            assert not session.pending.future.done()
+            assert not any(event["type"] == "session.commentary.append" for event in accepted)
+            updates = [event for event in accepted if event["type"] == "session.thinking.append"]
+            assert updates and all(event["delegation_id"] == "one" for event in updates)
+            finish_backend.set()
+            await asyncio.wait_for(final_received.wait(), 5)
+        finally:
+            finish_backend.set()
+            await session.close("test")
+            for consumer in consumers:
+                consumer.finish()
+            await asyncio.gather(*tasks)
+    assert any(progress in text for text in posted)
+
+
+@pytest.mark.asyncio
+async def test_late_backend_completion_updates_its_own_task_without_completing_a_new_one():
+    a = adapter()
+    session = GptLiveSession(a, 1, None, "33", config())
+    session._accepting_audio = True
+    session._seen.update({"old", "new"})
+    session.pending = PendingDelegation("new", asyncio.get_running_loop().create_future())
+    sent, received = [], asyncio.Event()
+    async def send(event):
+        sent.append(event)
+        received.set()
+    session._send = send
+    session.feed_backend_progress("Old request still pending", "old")
+    session.complete_pending("Old request completed successfully", "old")
+    task = asyncio.create_task(session._send_backend_updates())
+    try:
+        await asyncio.wait_for(received.wait(), 5)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert len(sent) == 1 and sent[0]["type"] == "session.thinking.append"
+    assert sent[0]["delegation_id"] == "old" and "completed successfully" in sent[0]["content"]
+    assert not session.pending.future.done()
+    session._accepting_audio = False
+    session.feed_backend_progress("New update after disconnect", "new")
+    assert session._backend_updates.empty()
 
 
 @pytest.mark.asyncio

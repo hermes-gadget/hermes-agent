@@ -27,6 +27,14 @@ DEFAULT_INSTRUCTIONS = (
     "or an action to the backend. Never claim work is finished until the backend confirms it. "
     "If the backend is still working, say so briefly and keep listening."
 )
+BACKEND_STATUS_INSTRUCTIONS = (
+    "Hermes tools and memories are available through backend delegation. Backend progress "
+    "updates are factual context about that task. Individual actions can finish before the "
+    "overall backend reply is ready. Use the latest update for each task: a pending final "
+    "reply does not mean that no action has been taken. If an action's current status is "
+    "unknown, say you are waiting for an update and delegate a status check. Do not guess "
+    "that work has not started or repeat an outdated status."
+)
 
 
 class GptLiveUnavailable(RuntimeError):
@@ -166,6 +174,9 @@ class GptLiveSession:
         self._input_remainder = self._output_remainder = b""
         self._audio = asyncio.Queue(maxsize=100)
         self._delegations = asyncio.Queue(maxsize=32)
+        self._backend_updates = asyncio.Queue(maxsize=32)
+        self._backend_completed = set()
+        self.backend_updates_sent = 0
         self._seen = set()
         self._transcripts = deque()
         self._transcript_size = 0
@@ -200,7 +211,8 @@ class GptLiveSession:
         await self._send({
             "type": "session.start", "event_id": "start",
             "session": {
-                "model": self.cfg.model, "instructions": self.cfg.instructions,
+                "model": self.cfg.model,
+                "instructions": self.cfg.instructions + "\n\n" + BACKEND_STATUS_INSTRUCTIONS,
                 "audio": {"format": {"type": "audio/pcm", "rate": 24000},
                           "output": {"voice": self.cfg.voice}},
                 "delegation": {"type": "client"}, "store": False,
@@ -216,7 +228,7 @@ class GptLiveSession:
         self._started_at = self._last_user_audio_at = time.monotonic()
         self._accepting_audio = True
         self._tasks = [asyncio.create_task(worker()) for worker in (
-            self._send_audio_worker, self._delegation_worker, self._watchdog,
+            self._send_audio_worker, self._delegation_worker, self._send_backend_updates, self._watchdog,
         )]
         logger.info("GPT-Live session started (guild=%s session=%s voice=%s)",
                     self.guild_id, self.session_id, self.cfg.voice)
@@ -394,8 +406,44 @@ class GptLiveSession:
         return " ".join(text.split())
 
     def complete_pending(self, content, delegation_id):
+        if delegation_id in self._backend_completed:
+            return
+        self._backend_completed.add(delegation_id)
         if self.pending and self.pending.id == delegation_id and not self.pending.future.done():
             self.pending.future.set_result(content)
+        else:
+            # A timed-out turn may finish while a newer request is pending. Keep
+            # its result as context for its OWN task without completing the new one.
+            self.feed_backend_progress(content, delegation_id, final=True)
+
+    def feed_backend_progress(self, content, delegation_id, *, final=False):
+        if self.is_live and delegation_id in self._seen and content.strip():
+            self.loop.call_soon_threadsafe(self._enqueue_backend_update, delegation_id, content, final)
+
+    def _enqueue_backend_update(self, did, content, final):
+        if not self.is_live or (did in self._backend_completed and not final):
+            return
+        if self._backend_updates.full():
+            self._backend_updates.get_nowait()
+        self._backend_updates.put_nowait((did, content, final))
+
+    async def _send_backend_updates(self):
+        try:
+            while True:
+                did, content, final = await self._backend_updates.get()
+                for chunk in commentary_chunks(content):
+                    if did in self._backend_completed and not final:
+                        break
+                    await self._send({
+                        "type": "session.thinking.append", "delegation_id": did,
+                        "event_id": f"backend_update_{self.backend_updates_sent + 1}", "content": chunk,
+                    })
+                    self.backend_updates_sent += 1
+                    if self.backend_updates_sent == 1:
+                        logger.info("GPT-Live backend progress sent (guild=%s)", self.guild_id)
+        except Exception as exc:
+            logger.warning("GPT-Live backend update failed (%s)", type(exc).__name__)
+            self._ended("transport")
 
     async def _commentary(self, did, content):
         for chunk in commentary_chunks(content):
@@ -418,7 +466,7 @@ class GptLiveSession:
                     if runner is None:
                         raise GptLiveUnavailable("gateway voice input handler unavailable")
                     await runner._handle_voice_channel_input(
-                        self.guild_id, int(self.cfg.user_id), text, adapter=self.adapter,
+                        self.guild_id, int(self.cfg.user_id), text, adapter=self.adapter, echo_transcript=False,
                     )
                 finally:
                     DELEGATION_CONTEXT.reset(token)
@@ -471,6 +519,7 @@ class GptLiveSession:
             "delegations": self.delegations, "dropped_frames": self.dropped_frames,
             "input_frames": self.input_frames, "sent_audio_frames": self.sent_audio_frames,
             "output_audio_bytes": self.output_audio_bytes,
+            "backend_updates_sent": self.backend_updates_sent,
         }
         try:
             path = self.home / "logs" / "gpt-live-usage.jsonl"
