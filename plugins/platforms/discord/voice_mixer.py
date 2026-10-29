@@ -7,6 +7,7 @@ discord.py's sender thread while children change on the asyncio loop, hence the 
 
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, List, Optional
 
 import discord
@@ -34,6 +35,63 @@ SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_LENGTH_MS // 1000   # 960
 FRAME_SIZE = SAMPLES_PER_FRAME * CHANNELS * SAMPLE_WIDTH    # 3840 bytes
 BYTES_PER_MS = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH // 1000  # 192
 SILENCE_FRAME = b"\x00" * FRAME_SIZE
+
+
+class LivePlaybackBuffer:
+    """Bounded PCM jitter buffer shared by the receive loop and Discord sender."""
+
+    def __init__(self, *, prime_ms: int = 120, mute_ms: int = 250):
+        self._lock = threading.Lock()
+        self._pcm = bytearray()
+        self._prime_bytes = max(FRAME_SIZE, (prime_ms + 19) // 20 * FRAME_SIZE)
+        self._limit = max(self._prime_bytes, 100 * FRAME_SIZE)
+        self._mute_ms = mute_ms
+        self._muted_until = 0.0
+        self._primed = False
+        self.generation = 0
+        self._first_feed_at = None
+
+    def feed(self, pcm: bytes) -> None:
+        with self._lock:
+            if time.monotonic() < self._muted_until:
+                return
+            if pcm and not self._pcm:
+                self._first_feed_at = time.monotonic()
+            self._pcm.extend(pcm)
+            overflow = len(self._pcm) - self._limit
+            if overflow > 0:
+                del self._pcm[:(overflow + 3) // 4 * 4]
+
+    def read_frame(self) -> bytes | None:
+        with self._lock:
+            if not self._primed:
+                self._primed = (len(self._pcm) >= self._prime_bytes or bool(
+                    self._pcm and self._first_feed_at is not None
+                    and time.monotonic() - self._first_feed_at >= self._prime_bytes / BYTES_PER_MS / 1000
+                ))
+            if not self._primed:
+                return None
+            if len(self._pcm) < FRAME_SIZE:
+                frame = bytes(self._pcm) if self._pcm else None
+                self._pcm.clear()
+                self._primed = False
+                return frame.ljust(FRAME_SIZE, b"\x00") if frame else None
+            frame = bytes(self._pcm[:FRAME_SIZE])
+            del self._pcm[:FRAME_SIZE]
+            return frame
+
+    def flush(self) -> None:
+        with self._lock:
+            self._pcm.clear()
+            self._primed = False
+            self.generation += 1
+            self._first_feed_at = None
+            self._muted_until = time.monotonic() + self._mute_ms / 1000
+
+    @property
+    def active(self) -> bool:
+        with self._lock:
+            return bool(self._pcm)
 
 
 class MixerChild:
@@ -88,6 +146,7 @@ class VoiceMixer(discord.AudioSource):
         self._lock = threading.Lock()
         self._ambient: Optional[MixerChild] = None
         self._speech: list[MixerChild] = []
+        self._live: Optional[LivePlaybackBuffer] = None
         self._ambient_gain, self._duck_gain, self._speech_gain = float(ambient_gain), float(duck_gain), float(speech_gain)
         # When speech ends, ramp the ambient back up over this many frames instead of jumping.
         self._duck_release_frames = max(1, duck_release_ms // FRAME_LENGTH_MS)
@@ -104,6 +163,22 @@ class VoiceMixer(discord.AudioSource):
                 return
             gain_now = self._duck_gain if self._speech_active else self._ambient_gain
             self._ambient = MixerChild(pcm, loop=True, gain=gain_now, fade_in_ms=200)
+
+    def attach_live(self, *, prime_ms: int = 120, mute_ms: int = 250) -> LivePlaybackBuffer:
+        with self._lock:
+            self._live = LivePlaybackBuffer(prime_ms=prime_ms, mute_ms=mute_ms)
+            return self._live
+
+    def detach_live(self) -> None:
+        with self._lock:
+            if self._live is not None:
+                self._live.flush()
+            self._live = None
+
+    def flush_live(self) -> None:
+        with self._lock:
+            if self._live is not None:
+                self._live.flush()
 
     def play_speech(self, pcm: bytes, *, gain: Optional[float] = None, fade_in_ms: int = 40) -> None:
         """Layer a one-shot speech clip over the ambient bed (ducks ambient)."""
@@ -164,6 +239,11 @@ class VoiceMixer(discord.AudioSource):
                 amb = self._ambient.read_frame()
                 if amb is not None:
                     acc = amb if acc is None else acc + amb
+            if self._live is not None:
+                live = self._live.read_frame()
+                if live is not None:
+                    live_samples = np.frombuffer(live, dtype="<i2").astype(np.float32)
+                    acc = live_samples if acc is None else acc + live_samples
             if acc is None:
                 return SILENCE_FRAME
             np.clip(acc, -32768, 32767, out=acc)
@@ -174,6 +254,10 @@ class VoiceMixer(discord.AudioSource):
             self._closed = True
             self._ambient = None
             self._speech.clear()
+
+            if self._live is not None:
+                self._live.flush()
+                self._live = None
 
 
 def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:

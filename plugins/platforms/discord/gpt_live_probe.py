@@ -9,19 +9,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import sys
 import time
 from typing import Any
 
 WS_URL = "wss://api.openai.com/v1/live/sessions"
+_wire_logger = logging.getLogger(__name__ + ".wire")
+_wire_logger.setLevel(logging.WARNING)
 
 
 class ProbeError(RuntimeError):
     """A failed prerequisite; implementation must wait for a successful probe."""
 
 
-async def probe(api_key: str, *, ws_url: str = WS_URL, timeout: float = 15) -> dict:
+async def probe(api_key: str, *, ws_url: str = WS_URL, timeout: float = 15, voice: str = "gleam") -> dict:
     """Start and immediately finalize a session, without sending any audio."""
     if not api_key.strip():
         raise ProbeError("Set OPENAI_API_KEY or VOICE_TOOLS_OPENAI_KEY in the gateway secret scope.")
@@ -35,7 +38,7 @@ async def probe(api_key: str, *, ws_url: str = WS_URL, timeout: float = 15) -> d
             "model": "gpt-live-1",
             "audio": {
                 "format": {"type": "audio/pcm", "rate": 24000},
-                "output": {"voice": "marin"},
+                "output": {"voice": voice},
             },
             "delegation": {"type": "client"},
             "store": False,
@@ -65,6 +68,7 @@ async def probe(api_key: str, *, ws_url: str = WS_URL, timeout: float = 15) -> d
         open_timeout=timeout,
         close_timeout=timeout,
         max_size=8 * 1024 * 1024,
+        logger=_wire_logger,
     ) as ws:
         connected_at = time.monotonic()
         await ws.send(json.dumps(start_event))
@@ -93,7 +97,7 @@ async def probe(api_key: str, *, ws_url: str = WS_URL, timeout: float = 15) -> d
     audio = resolved.get("audio", {})
     if (
         audio.get("format") != start_event["session"]["audio"]["format"]
-        or audio.get("output", {}).get("voice") != "marin"
+        or audio.get("output", {}).get("voice") != voice
     ):
         raise ProbeError("Resolved session does not use the requested audio format and voice.")
     return {

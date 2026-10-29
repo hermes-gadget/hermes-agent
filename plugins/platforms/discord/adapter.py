@@ -665,7 +665,9 @@ class VoiceReceiver:
     CHANNELS = 2               # Discord sends stereo
     REKEY_FAILURE_STREAK = 25  # consecutive NaCl failures → re-resolve creds
 
-    def __init__(self, voice_client, allowed_user_ids: set | None = None):
+    def __init__(self, voice_client, allowed_user_ids: set | None = None, *, stream_callback=None,
+                 stream_user_ids=None, utterance_capture=True, speech_onset_callback=None,
+                 min_speech_ms=200):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
@@ -694,6 +696,12 @@ class VoiceReceiver:
         self._paused = False
         # Debug logging counter (instance-level to avoid cross-instance races)
         self._packet_debug_count = 0
+        self._stream_callback = stream_callback
+        self._stream_user_ids = {int(uid) for uid in (stream_user_ids or ())}
+        self._utterance_capture = utterance_capture
+        self._speech_onset_callback = speech_onset_callback
+        self._min_speech_seconds = min_speech_ms / 1000
+        self._stream_speech = {}
 
         # Decode-health counters (logged at teardown) and the NaCl failure
         # streak used to detect stale credentials after a re-key.
@@ -926,6 +934,12 @@ class VoiceReceiver:
         _, _, seq, _timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
         if ssrc == self._bot_ssrc:
             return
+        if self._stream_callback:
+            # Never infer an unknown SSRC from the allowlist: another member's
+            # first packet could otherwise be attributed to the configured user.
+            with self._lock:
+                if self._ssrc_to_user.get(ssrc) not in self._stream_user_ids:
+                    return
         # Calculate dynamic RTP header size (RFC 9335 / rtpsize mode)
         cc = first_byte & 0x0F  # CSRC count
         has_extension = bool(first_byte & 0x10)  # extension bit
@@ -1048,14 +1062,36 @@ class VoiceReceiver:
                 self._decoders[ssrc] = discord.opus.Decoder()
             pcm = self._decoders[ssrc].decode(decrypted)
             self._decode_ok += 1
-            with self._lock:
-                self._buffers[ssrc].extend(pcm)
-                self._last_packet_time[ssrc] = time.monotonic()
         except Exception as e:
             with self._lock:
                 self._decoders.pop(ssrc, None)
             logger.debug("Opus decode error for SSRC %s; reset decoder: %s", ssrc, e)
             return
+        self._capture_decoded(ssrc, pcm)
+
+    def _capture_decoded(self, ssrc, pcm):
+        now = time.monotonic()
+        with self._lock:
+            user_id = self._ssrc_to_user.get(ssrc)
+            if self._utterance_capture:
+                self._buffers[ssrc].extend(pcm)
+            self._last_packet_time[ssrc] = now
+        if not self._stream_callback or user_id not in self._stream_user_ids:
+            return
+        self._stream_callback(user_id, pcm)
+        if self._speech_onset_callback:
+            import numpy as np
+            samples = np.frombuffer(pcm[:len(pcm) // 2 * 2], "<i2").astype(np.float32)
+            if not samples.size or float(np.mean(samples * samples)) <= 300 ** 2:
+                return
+            last, duration, fired = self._stream_speech.get(user_id, (0, 0, False))
+            if now - last >= 0.3:
+                duration, fired = 0, False
+            duration += len(pcm) / 192000
+            if not fired and duration + 1e-9 >= self._min_speech_seconds:
+                self._speech_onset_callback()
+                fired = True
+            self._stream_speech[user_id] = (now, duration, fired)
 
     # --- Silence detection ---
 
@@ -1083,6 +1119,8 @@ class VoiceReceiver:
 
     def check_silence(self) -> list:
         """Return list of (user_id, pcm_bytes) for completed utterances."""
+        if not self._utterance_capture:
+            return []
         now = time.monotonic()
         completed = []
         with self._lock:
@@ -1169,6 +1207,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_gpt_live import DiscordGptLiveMixin
 from plugins.platforms.discord.adapter_opus import load_opus_codec
 from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
@@ -1176,7 +1215,7 @@ from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesM
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
+class DiscordAdapter(DiscordGptLiveMixin, DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
                      DiscordSlashAuthMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
@@ -1242,6 +1281,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._voice_mixers: dict[int, Any] = {}  # guild_id -> VoiceMixer
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
         self._voice_fx_cfg: dict[str, Any] = self._load_voice_fx_config()
+        self._init_gpt_live()
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
         self._semantic_thread_renames = SemanticThreadRenames()
@@ -1475,6 +1515,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 )
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
+                if adapter_self._gpt_live_cfg.enabled:
+                    adapter_self._gpt_live_spawn(adapter_self._reconcile_gpt_live())
 
             @self._client.event
             async def on_socket_event_type(event_type: str):
@@ -1517,6 +1559,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
+                adapter_self._gpt_live_voice_state(member, before, after)
                 bot_guild_ids = set(adapter_self._voice_clients.keys())
                 if not bot_guild_ids:
                     return
@@ -2116,6 +2159,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._disconnecting = True
         # Cancel the liveness probe first so it can't fire a spurious fatal/reconnect mid-teardown.
         await self._cancel_liveness_task()
+        await self._shutdown_gpt_live()
         # Leave voice *before* cancelling the bot task: VoiceClient.disconnect() needs the main
         # gateway WS (run by the bot task) or it blocks until the timeout.
         for guild_id in list(self._voice_clients.keys()):
@@ -3155,6 +3199,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for final reaction and durable state."""
+        self._gpt_live_complete_stream(event)
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
         if not self._reactions_enabled():
             return
@@ -3214,6 +3259,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     ) -> SendResult:
         """Send a message to a Discord channel or thread (metadata thread_id wins over
         chat_id; forum channels auto-create a thread post since they reject direct sends)."""
+        self._gpt_live_tap_reply(chat_id, content, metadata)
         if not self._client:
             # Dead transport: classify as send_path_degraded so the delivery ledger's reconnect
             # sweep can replay this; a generic "Not connected" error would strand the output.
@@ -3285,7 +3331,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
+            if not self._gpt_live_text_failure(chat_id):
+                logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             if _is_discord_transport_error(e):
                 # Connection-shaped failure: runtime-retryable marker so the reconnect sweep can replay it.
                 result = SendResult(success=False, error="send_path_degraded", retryable=True)
@@ -3540,6 +3587,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""
+        if self._gpt_live_active_for_chat(chat_id):
+            return SendResult(success=True)
         for gid, text_ch_id in self._voice_text_channels.items():
             if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
                 logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
@@ -3664,7 +3713,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._ambient_pcm_cache = pcm
         return pcm
 
-    async def _install_voice_mixer(self, guild_id: int, vc) -> None:
+    async def _install_voice_mixer(self, guild_id: int, vc, *, live_mode: bool = False) -> None:
         """Install a VoiceMixer on the VC; one ``vc.play(mixer)`` runs for the whole connection."""
         VoiceMixer = _voice_mixer_module().VoiceMixer
         mixer = VoiceMixer(
@@ -3672,13 +3721,20 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             duck_gain=float(self._voice_fx_cfg.get("duck_gain", 0.06)),
             speech_gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
         )
-        ambient = await asyncio.to_thread(self._get_ambient_pcm)
+        ambient = None
+        if not live_mode or self._voice_fx_cfg.get("enabled"):
+            ambient = await asyncio.to_thread(self._get_ambient_pcm)
         if ambient:
             mixer.set_ambient(ambient)
+        if live_mode:
+            mixer.read()  # Fail before joining Live if the optional PCM dependency is absent.
+        voice_loop = asyncio.get_running_loop() if live_mode else None
 
         def _after(error):
             if error:
                 logger.error("Voice mixer stream error (guild=%d): %s", guild_id, error)
+                if voice_loop is not None:
+                    voice_loop.call_soon_threadsafe(self._gpt_live_request_stop, guild_id, "mixer_failed")
         if vc.is_playing():
             vc.stop()
         vc.play(mixer, after=_after)
@@ -3748,7 +3804,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
-    async def join_voice_channel(self, channel, *, text_channel_id: int | None = None, source: dict | None = None) -> bool:
+    async def join_voice_channel(self, channel, *, text_channel_id: int | None = None, source: dict | None = None,
+                                 live_mode: bool = False) -> bool:
         """Join a voice channel; returns True on success. ``text_channel_id`` stores the
         transcription-routing binding so programmatic joins work without ``/voice join``."""
         if not self._client or not DISCORD_AVAILABLE:
@@ -3757,34 +3814,68 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             existing = self._voice_clients.get(guild_id)
             if existing and existing.is_connected():
+                if existing.channel.id == channel.id and not live_mode:
+                    self._reset_voice_timeout(guild_id)
+                    self._bind_voice_text_channel(guild_id, text_channel_id, source)
+                    return True
                 if existing.channel.id != channel.id:
                     await existing.move_to(channel)
-                self._reset_voice_timeout(guild_id)
-                self._bind_voice_text_channel(guild_id, text_channel_id, source)
-                return True
-            vc = await channel.connect()
+                if not live_mode:
+                    self._reset_voice_timeout(guild_id)
+                    self._bind_voice_text_channel(guild_id, text_channel_id, source)
+                    return True
+                receiver = self._voice_receivers.pop(guild_id, None)
+                if receiver:
+                    receiver.stop()
+                task = self._voice_listen_tasks.pop(guild_id, None)
+                if task:
+                    task.cancel()
+                vc = existing
+            else:
+                vc = await channel.connect(self_deaf=False) if live_mode else await channel.connect()
             self._voice_clients[guild_id] = vc
-            self._reset_voice_timeout(guild_id)
+            if live_mode:
+                self._cancel_voice_timeout(guild_id)
+            else:
+                self._reset_voice_timeout(guild_id)
             self._bind_voice_text_channel(guild_id, text_channel_id, source)
             try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                live_kwargs = {}
+                if live_mode:
+                    session = self._gpt_live_sessions[guild_id]
+                    live_kwargs = dict(
+                        stream_callback=session.feed_user_pcm, stream_user_ids={session.cfg.user_id},
+                        utterance_capture=False, speech_onset_callback=session.note_user_speech,
+                        min_speech_ms=session.cfg.barge_in_min_speech_ms,
+                    )
+                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids, **live_kwargs)
                 receiver.start()
                 self._voice_receivers[guild_id] = receiver
-                self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
-                    self._voice_listen_loop(guild_id)
-                )
+                if not live_mode:
+                    self._voice_listen_tasks[guild_id] = asyncio.ensure_future(self._voice_listen_loop(guild_id))
             except Exception as e:
+                if live_mode:
+                    raise
                 logger.warning("Voice receiver failed to start: %s", e)
             # Mixer is best-effort; failure falls back to one-shot FFmpegPCMAudio playback.
-            if getattr(self, "_voice_fx_cfg", {}).get("enabled"):
+            if getattr(self, "_voice_fx_cfg", {}).get("enabled") or live_mode:
                 try:
-                    await self._install_voice_mixer(guild_id, vc)
+                    if live_mode:
+                        await self._install_voice_mixer(guild_id, vc, live_mode=True)
+                    else:
+                        await self._install_voice_mixer(guild_id, vc)
                 except Exception as e:
+                    if live_mode:
+                        raise
                     logger.warning("Voice mixer failed to start: %s", e)
             return True
 
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
+        if guild_id in getattr(self, "_gpt_live_sessions", {}):
+            self._gpt_live_wanted.discard(guild_id)
+            await self._stop_gpt_live(guild_id, "user_left")
+            return
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             receiver = self._voice_receivers.pop(guild_id, None)
             pending_inputs = []
@@ -3819,6 +3910,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
         """Play audio in the VC: via the mixer (layered over the ambient bed, ducking it)
         when installed, else the legacy one-shot FFmpegPCMAudio path."""
+        if guild_id in getattr(self, "_gpt_live_sessions", {}):
+            return True
         vc = self._voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
             return False
@@ -3909,6 +4002,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _reset_voice_timeout(self, guild_id: int) -> None:
         """Reset the auto-disconnect inactivity timer."""
         self._cancel_voice_timeout(guild_id)
+        if guild_id in getattr(self, "_gpt_live_sessions", {}):
+            return
         timeout = self._voice_timeout_limit()
         if timeout <= 0:
             logger.debug("Voice inactivity timeout disabled (guild=%d)", guild_id)
