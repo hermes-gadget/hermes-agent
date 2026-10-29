@@ -35,6 +35,32 @@ import voice_mixer as vm  # noqa: E402
 
 class TestVoiceMixerCore:
 
+    def test_live_buffer_prime_underrun_barge_in_and_mix(self, monkeypatch):
+        clock = [100.0]
+        monkeypatch.setattr(vm.time, "monotonic", lambda: clock[0])
+        mx = vm.VoiceMixer()
+        live = mx.attach_live(prime_ms=40, mute_ms=250)
+        frame = np.full(1920, 1000, dtype="<i2").tobytes()
+        live.feed(frame)
+        assert mx.read() == vm.SILENCE_FRAME
+        live.feed(frame)
+        mx.play_speech(frame, fade_in_ms=0)
+        assert np.all(np.frombuffer(mx.read(), "<i2") == 2000)
+        live.flush()
+        live.feed(frame * 2)
+        assert mx.read() == vm.SILENCE_FRAME
+        clock[0] += 0.3
+        live.feed(frame * 2)
+        assert mx.read() == frame and mx.read() == frame
+        assert mx.read() == vm.SILENCE_FRAME
+        live.feed(frame[:200])
+        clock[0] += 0.05
+        assert mx.read() == frame[:200].ljust(vm.FRAME_SIZE, b"\0")
+        mx.detach_live()
+        assert mx.read() == vm.SILENCE_FRAME
+        mx.cleanup()
+        assert mx.read() == vm.SILENCE_FRAME
+
     def test_empty_mixer_returns_silence_frames(self):
         mx = vm.VoiceMixer()
         for _ in range(5):
