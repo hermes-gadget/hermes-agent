@@ -77,6 +77,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.adapter_live import MatrixLiveMixin
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -820,7 +821,7 @@ class _CryptoStateStore:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(MatrixLiveMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -925,6 +926,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
                 logger.warning("Matrix: ignoring invalid MATRIX_IGNORE_USER_PATTERNS entry %r: %s", pattern, exc)
+        self._init_matrix_live()
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -1372,9 +1374,11 @@ class MatrixAdapter(BasePlatformAdapter):
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
         self._wire_plugin_handlers(self._client)  # plugin-registered native handlers
+        await self._connect_matrix_live()
         return True
 
     async def disconnect(self) -> None:
+        await self._disconnect_matrix_live()
         self._closing = True
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
@@ -1405,6 +1409,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        self._gpt_live_tap_reply(chat_id, content, metadata)
         if not content:
             return SendResult(success=True)
         last_event_id = None
@@ -1461,6 +1466,7 @@ class MatrixAdapter(BasePlatformAdapter):
         device_id = self._device_id or getattr(self._client, "device_id", "") or ""
         return {
             "platform": "matrix", "homeserver": self._homeserver,
+            "live_voice": self.matrix_live_diagnostics(),
             "auth": {
                 "access_token_present": token_present, "password_present": bool(self._password),
                 "token_preview": "***" if token_present else "", "user_id": user_id,

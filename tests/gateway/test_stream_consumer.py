@@ -1566,3 +1566,28 @@ class TestFlushPendingSync:
         consumer.finish()
         await task
 
+
+
+@pytest.mark.asyncio
+async def test_coalesced_preamble_send_stays_interim_until_the_actual_final():
+    """A segment break may arrive before the consumer's first throttle tick."""
+    sends=[];first=asyncio.Event()
+    async def send(**kwargs):
+        sends.append(kwargs);first.set()
+        return SimpleNamespace(success=True,message_id=str(len(sends)))
+    adapter=SimpleNamespace(send=send,edit_message=AsyncMock(return_value=SimpleNamespace(success=True)),MAX_MESSAGE_LENGTH=4096)
+    consumer=GatewayStreamConsumer(adapter,'chat',config=StreamConsumerConfig(edit_interval=0.01))
+    consumer.on_delta('I am checking the running jobs.')
+    consumer.on_segment_break()
+    task=asyncio.create_task(consumer.run())
+    try:
+        await asyncio.wait_for(first.wait(),2)
+        consumer.on_delta('The jobs finished successfully.')
+        consumer.finish('The jobs finished successfully.')
+        await asyncio.wait_for(task,2)
+    finally:
+        if not task.done():task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
+    assert sends[0]['metadata']['_interim_send'] is True
+    assert sends[-1]['metadata']['notify'] is True
+    assert not sends[-1]['metadata'].get('_interim_send')

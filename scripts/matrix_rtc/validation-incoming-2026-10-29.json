@@ -1,0 +1,20 @@
+[
+  {
+    "format": "state",
+    "gate": "incoming_helper",
+    "exit_code": 0,
+    "elapsed_seconds": 30.9
+  },
+  {
+    "format": "sticky",
+    "gate": "incoming_helper",
+    "exit_code": 0,
+    "elapsed_seconds": 21.28
+  },
+  {
+    "format": "current",
+    "gate": "incoming_helper",
+    "exit_code": 0,
+    "elapsed_seconds": 19.67
+  }
+]

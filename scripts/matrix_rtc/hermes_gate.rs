@@ -32,6 +32,17 @@ async fn open_test_slot(
 #[test]
 #[ignore = "requires the isolated Hermes MatrixRTC lab"]
 fn encrypted_duplex() {
+    duplex(false);
+}
+
+#[test]
+#[ignore = "requires the isolated Hermes MatrixRTC lab"]
+fn legacy_duplex_without_slot() {
+    assert_ne!(format_from_env(), MembershipFormat::Current);
+    duplex(true);
+}
+
+fn duplex(skip_slot: bool) {
     run_to_completion(OVERALL_DEADLINE, |cfg| async move {
         let format = format_from_env();
         let (a, b) = credentials(&cfg).await?;
@@ -44,7 +55,7 @@ fn encrypted_duplex() {
         br.join().await?;
         wait_for_joined_members(&ar, 2, "alice").await?;
         wait_for_joined_members(&br, 2, "bob").await?;
-        open_test_slot(&cfg, &alice.client, &room_id, format).await?;
+        if !skip_slot { open_test_slot(&cfg, &alice.client, &room_id, format).await?; }
         let alice = join_call(&cfg, alice, ar, &a.user, &cfg.livekit_service_url, format).await?;
         let bob = join_call(&cfg, bob, br, &b.user, &cfg.livekit_service_url, format).await?;
         let roster = wait_for_members(&alice.call, 2, "alice").await
@@ -139,6 +150,121 @@ fn crash_peer() {
         let peer = join_call(&cfg, synced, room, &user, &cfg.livekit_service_url, format_from_env()).await?;
         let _tone = media::publish_tone(&peer.call.session(), 660.0).await?;
         std::future::pending::<()>().await;
+        Ok(())
+    });
+}
+
+/// Exercise the real separately enrolled callee and its framed PCM protocol.
+#[test]
+#[ignore = "requires the lab and the built Hermes helper"]
+fn incoming_helper() {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    run_to_completion(OVERALL_DEADLINE, |cfg| async move {
+        let format = format_from_env();
+        let (a, b) = credentials(&cfg).await?;
+        let alice = login_and_sync(&cfg, &a).await?;
+        let server = alice.client.user_id().unwrap().server_name().to_string();
+        let bid = UserId::parse(format!("@{}:{server}", b.user))?;
+        let store = std::env::temp_dir().join(format!("hermes-callee-{}", provision::run_suffix()));
+        let native = env::var("HERMES_MATRIX_HELPER").unwrap_or("/src/target/debug/hermes-matrix-call".into());
+        let config = serde_json::json!({"homeserver":cfg.homeserver,"user_id":bid.as_str(),
+            "allowed_user":alice.client.user_id().unwrap().as_str(),"store":store,"create_identity_if_missing":true});
+        let mut enrol = std::process::Command::new(&native).arg("enrol")
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn()?;
+        enrol.stdin.take().unwrap().write_all(serde_json::to_string(&serde_json::json!({"config":config,"password":b.password}))?.as_bytes())?;
+        let enrolled = enrol.wait_with_output()?;
+        if !enrolled.status.success() { return Err("helper enrol failed".into()); }
+        let bob = login_and_sync(&cfg, &b).await?;
+        let room_id = create_encrypted_room(&alice.client, &[&bid]).await?;
+        let ar = wait_for_room(&alice.client, &room_id).await?;
+        let br = wait_for_room(&bob.client, &room_id).await?;
+        br.join().await?;
+        wait_for_joined_members(&ar,2,"alice").await?;
+        bob.sync.stop().await;
+        let (parent, child_fd) = std::os::unix::net::UnixStream::pair()?;
+        // Test harness runs one test at a time; explicitly pass this one fd.
+        unsafe extern "C" { fn fcntl(fd:i32, cmd:i32, value:i32)->i32; }
+        if unsafe { fcntl(child_fd.as_raw_fd(),2,0) } < 0 { return Err("fd inheritance failed".into()); }
+        let mut child = ChildGuard(std::process::Command::new(&native)
+            .args(["run",&child_fd.as_raw_fd().to_string()])
+            .stdout(std::process::Stdio::null()).spawn()?);
+        drop(child_fd);
+        parent.set_nonblocking(true)?;
+        let mut ipc = tokio::net::UnixStream::from_std(parent)?;
+        async fn send(ipc:&mut tokio::net::UnixStream, value:serde_json::Value)->Result<(),Box<dyn Error>> {
+            let json=serde_json::to_vec(&value)?;
+            ipc.write_u32((json.len()+1) as u32).await?;
+            ipc.write_u8(0).await?; ipc.write_all(&json).await?; Ok(())
+        }
+        async fn control(ipc:&mut tokio::net::UnixStream, name:&str)->Result<serde_json::Value,Box<dyn Error>> {
+            tokio::time::timeout(Duration::from_secs(60),async {
+                loop {
+                    let size=ipc.read_u32().await? as usize;
+                    if size==0 || size>65536 { return Err("bad packet bound".into()); }
+                    let mut data=vec![0;size];ipc.read_exact(&mut data).await?;
+                    if data[0]==0 {
+                        let value:serde_json::Value=serde_json::from_slice(&data[1..])?;
+                        println!("[helper] control {}",value["event"]);
+                        if value["event"]==name { return Ok(value); }
+                        if value["event"]=="ended" { return Err(format!("helper ended: {}",value["reason"]).into()); }
+                    }
+                }
+            }).await?
+        }
+        send(&mut ipc,serde_json::json!({"protocol":1,"config":config})).await?;
+        control(&mut ipc,"ready").await?;
+        // A legacy caller does not create a spec-current slot. The callee is
+        // PL 0 and must answer without writing one on its behalf.
+        if format==MembershipFormat::Current { open_test_slot(&cfg,&alice.client,&room_id,format).await?; }
+        let call=LiveKitCall::join(&ar,LiveKitCallOptions {
+            format,slot_id:cfg.slot_id.clone(),
+            livekit_transport:Some(LiveKitTransport{livekit_service_url:cfg.livekit_service_url.clone()}),
+            kind:matrix_rtc_call::CallKind::Direct{ring:Some(matrix_rtc_call::RingConfig{intent:Some("audio".into()),..Default::default()})},
+            ..Default::default()
+        }).await?;
+        println!("[caller] call status {:?}",call.status());
+        let ring=control(&mut ipc,"incoming").await?;
+        assert!(ring["notification_id"].as_str().unwrap().starts_with('$'));
+        let generation=ring["generation"].as_u64().unwrap();
+        send(&mut ipc,serde_json::json!({"op":"accept","generation":generation})).await?;
+        control(&mut ipc,"joined").await?;
+        let _tone=media::publish_tone(&call.session(),440.0).await?;
+        let capture=tokio::time::timeout(Duration::from_secs(15),async {
+            loop {
+                let size=ipc.read_u32().await? as usize;
+                if size==0 || size>65536 { return Err("bad audio packet bound".into()); }
+                let mut data=vec![0;size];ipc.read_exact(&mut data).await?;
+                if data[0]==1 && data.len()>9 {
+                    assert_eq!(u64::from_be_bytes(data[1..9].try_into().unwrap()),generation);
+                    let energy:f64=data[9..].chunks_exact(2).map(|p|{let n=i16::from_le_bytes([p[0],p[1]]) as f64;n*n}).sum();
+                    if energy>1e7 { return Ok::<_,Box<dyn Error>>(()); }
+                }
+            }
+        }).await?;
+        capture?;
+        // Return a paced 660 Hz PCM stream through the gateway boundary.
+        let writer=tokio::spawn(async move {
+            for index in 0..250 {
+                let mut data=vec![1];data.extend(generation.to_be_bytes());
+                for sample in 0..480 {
+                    let phase=(index*480+sample) as f64*660.0*std::f64::consts::TAU/24000.0;
+                    data.extend(((phase.sin()*8000.0) as i16).to_le_bytes());
+                }
+                ipc.write_u32(data.len() as u32).await?;ipc.write_all(&data).await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            send(&mut ipc,serde_json::json!({"op":"quit"})).await.map_err(|_|std::io::Error::other("quit"))?;
+            Ok::<_,std::io::Error>(())
+        });
+        assert!(record_peer_tone(&call,"caller",660.0).await?);
+        writer.await??;
+        call.leave().await?;
+        let exit=child.0.wait()?;
+        assert!(exit.success());
+        std::fs::remove_dir_all(store)?;
+        println!("HERMES_GATE incoming_helper encrypted_pcm_duplex=true child_reaped=true");
         Ok(())
     });
 }

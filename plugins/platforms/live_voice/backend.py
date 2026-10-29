@@ -79,4 +79,3 @@ class LiveBackendMixin:
         if context and context[0].adapter is self:
             return True
         return super()._streaming_tts_turn_completed(session_key, turn_marker, event=event)
-

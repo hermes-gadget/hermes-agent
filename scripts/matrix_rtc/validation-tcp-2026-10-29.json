@@ -1,0 +1,9 @@
+{
+  "gate": "incoming_helper_tcp_only",
+  "exit_code": 0,
+  "elapsed_seconds": 33.26,
+  "udp_media_blocked_in_private_namespace": true,
+  "firewall_counters": "Chain OUTPUT (policy ACCEPT 2716 packets, 501K bytes)\n pkts bytes target     prot opt in     out     source               destination         \n  416 61764 REJECT     17   --  *      *       0.0.0.0/0            0.0.0.0/0            udp dpt:!53 reject-with icmp-port-unreachable\n",
+  "server": "matrix.vexcore.org",
+  "fallback": "existing TURN/TCP 3478"
+}

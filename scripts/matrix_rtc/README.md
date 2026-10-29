@@ -1,14 +1,17 @@
 # Native MatrixRTC transport qualification
 
-This is the first implementation gate for Hermes Matrix live voice. It builds
+This qualification harness supports Hermes Matrix live voice. It builds
 Element's native SDK and exercises actual encrypted audio against an isolated
-Synapse, MatrixRTC authorisation service and LiveKit SFU. It does not enable
-Matrix calling in the gateway. Production deployment follows successful native
-transport and Element client interoperability tests.
+Synapse, MatrixRTC authorisation service and LiveKit SFU. The gateway integration and setup instructions are in
+[`plugins/platforms/matrix/README-live-voice.md`](../../plugins/platforms/matrix/README-live-voice.md).
 
 ## Qualification result: 29 October 2026
 
-The native delayed-sticky fix now passes **all six gates**, and the patched
+The native delayed-sticky fix passes **all six gates** after the final compatibility patch.
+The separately enrolled helper also passes incoming encrypted PCM duplex and
+child-reaping tests in all three formats, plus an actual call through the production
+VPS with disposable accounts ([incoming receipt](validation-incoming-2026-10-29.json),
+[production receipt](validation-production-2026-10-29.json)). The patched
 native client also passed the upstream Element Web/embedded Element Call
 interoperability tests in room-state and sticky modes (2 tests, 45.2 s).
 The reference client was Element Web `v1.12.25`. Ben's actual desktop and mobile
@@ -22,7 +25,10 @@ and encrypts the event; no custom crypto is introduced. The
 [patch](native-delayed-sticky.patch) includes the resolved lockfile, and the
 [fixed-run receipt](validation-fixed-2026-10-29.json) records six passing gates.
 The upstream API is still a draft, so this is a pinned local patch pending an
-upstream RTC release.
+upstream RTC release. The patch also limits slot-state ingestion to Current mode:
+legacy sticky Element calls do not publish `m.rtc.slot`. The no-slot duplex test
+reproduced `slot is not open` before that fix and passes encrypted audio after it;
+Current still reads and enforces slot state.
 
 To reproduce the fixed native run, add `--native-fix` to **each** prepare,
 build and test command below. Use separate work directories for baseline and
@@ -58,9 +64,9 @@ Element Call v0.26.1 documents
 using room-state membership. This is a viable candidate for a restricted first
 release, but these two-native-client tests do not establish compatibility with
 Ben's actual desktop and mobile builds. The fixed run above clears the native
-cleanup issue. The full rollout remains pending device enrolment, integration,
-production infrastructure and acceptance tests. No production configuration
-was changed during qualification.
+cleanup issue. Device enrolment, integration and production infrastructure are now implemented.
+Ben's actual desktop/mobile client acceptance remains a separate check. The
+original baseline qualification did not change production configuration.
 
 ## Run the lab
 
@@ -98,7 +104,8 @@ the Hermes gates do not write audio recordings.
 
 `hermes_gate.rs` is compiled as a child module of the pinned SDK's existing
 `e2e_call` test harness, reusing its account provisioning and encrypted-room
-setup. No SDK implementation is changed. Cargo uses the upstream lockfile.
+setup. The baseline does not change SDK implementation; `--native-fix` applies the
+reviewed patch described above. Cargo uses the checked-in lockfile.
 
 For each SDK membership format (`Current`, `Sticky2025`, `RoomState`):
 
@@ -137,14 +144,14 @@ Hermes contact, from Element Web/Desktop and Element X. Use `gpt-live-1` with
 Gleam, normal Hermes tools and memories, quiet backend progress, final replies,
 barge-in and no `[Voice] @Ben` transcript echo.
 
-The gateway will own the native helper as a reaped child process with bounded
+The gateway owns the native helper as a reaped child process with bounded
 control/PCM queues and call-generation IDs. Its verified Matrix device and
 crypto store must be separate from the mautrix chat device and scoped per
 Hermes profile. Do not copy the chat crypto store, reuse its token with a new
 store, or reset the account's cross-signing identity to enrol the call device.
 
-Extract the tested Discord GPT-Live wire client behind platform-neutral audio
-and backend-dispatch callbacks only after the transport gate passes. Preserve
+The tested Discord GPT-Live wire client is shared behind platform-neutral audio
+and backend-dispatch callbacks after the transport gate passed. Preserve
 the continuous 20 ms PCM clock, progress/final correlation and current Discord
 regressions. Calls use a shared per-profile lease: decline busy while Discord
 is active, accept only fresh authorised rings in two-person encrypted DMs, and
@@ -159,8 +166,15 @@ Deploy authenticated LiveKit and lk-jwt-service with `/livekit/sfu` and
 and application-service integration. Restrict full access to `vexcore.org`,
 disable SFU room auto-creation and test UDP plus TCP media fallback.
 
-Activation remains off until a verified device is enrolled and real calls pass
-on both client families, including tools/memory, progress, interruption,
-redial, busy handling, cellular access and TCP fallback. Preserve the agreed
+Activation is off by default. Enrol a verified device and pass the automated
+gates before enabling private, allowlisted acceptance calls. Actual client
+acceptance must cover both client families, tools/memory, progress, interruption,
+redial, busy handling and cellular access. The production TCP-only media test
+also passed with UDP rejected inside its disposable network namespace
+([receipt](validation-tcp-2026-10-29.json)). The existing authenticated TURN/TCP
+service on 3478 supplies fallback because the provider blocks direct TCP 7881.
+LiveKit and coturn use host media networking to avoid public-address hairpin
+failures; signalling binds only loopback and the private Caddy interface.
+Coturn retains its credentials/certificates and uses UDP relays 49160–49200. Preserve the agreed
 15-minute idle, 60-minute maximum and 180-second backend timeout defaults;
 record no call audio and keep API `store: false`.
