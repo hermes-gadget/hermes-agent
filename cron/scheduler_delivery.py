@@ -47,7 +47,7 @@ _HOME_TARGET_PRIORITY = (
 _LEGACY_HOME_TARGET_ENV_VARS = {"QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL"}
 
 
-def _resolve_cron_surface_mode(pconfig, logical_platform_name: str) -> str:
+def _resolve_cron_surface_mode(pconfig, logical_platform_name: str, job: Optional[dict] = None) -> str:
     """Return ``"in_channel"`` or ``"thread"`` (default) for a platform config.
 
     Native: flat ``platforms.<p>.extra.cron_continuable_surface``. Relay-fronted:
@@ -56,6 +56,9 @@ def _resolve_cron_surface_mode(pconfig, logical_platform_name: str) -> str:
     _relay_slack_extra, a sub-block that omits the knob falls back to the flat key (deliberate —
     the flat key must keep working), so a flat value applies to EVERY platform the relay fronts.
     """
+    per_job = (job or {}).get("delivery_surface")
+    if per_job in ("in_channel", "thread"):
+        return per_job
     with contextlib.suppress(Exception):
         extra = getattr(pconfig, "extra", None) or {}
         sub = extra.get(str(logical_platform_name or "").lower())
@@ -1713,7 +1716,7 @@ def _prepare_target_delivery(
     # Continuable surface (D1/D2/D6) from platform config ``extra``; default "thread".
     # ``in_channel`` delivers FLAT so a plain channel reply continues via the shared session
     # ``(platform, chat_id, None)``. Unsupported adapters fail SAFE to thread.
-    in_channel_surface = _resolve_cron_surface_mode(pconfig, platform_name) == "in_channel"
+    in_channel_surface = _resolve_cron_surface_mode(pconfig, platform_name, job) == "in_channel"
     if (
         in_channel_surface
         and runtime_adapter is not None
@@ -1821,6 +1824,8 @@ def _deliver_result(
     with contextlib.suppress(Exception):
         user_cfg = _sched.load_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+    if isinstance(job.get("wrap_response"), bool):
+        wrap_response = job["wrap_response"]
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);

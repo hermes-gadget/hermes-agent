@@ -1185,6 +1185,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     allow_from_covers_groups = True  # no group_allow_from: allow_from is the one user allowlist
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    # Flat cron briefs share the ordinary guild session. no_thread_channels /
+    # free-response channel policy keeps human replies on that same surface.
+    supports_inchannel_continuable = True
     # Safety ceiling on split deliveries: chunks beyond the cap become a notice (degenerate turns).
     # Safety ceiling on split deliveries (#86581): a degenerate turn can produce tens of thousands of
     # characters — without a cap the adapter posts every 2000-char chunk back-to-back and floods the channel

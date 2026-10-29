@@ -1835,6 +1835,8 @@ def create_job(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
+    delivery_surface: Optional[str] = None,
+    wrap_response: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1847,7 +1849,9 @@ def create_job(
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation). timezone: IANA key pinning the schedule's
     wall clock (None/'' = inherit the profile zone). grace_minutes: catch-up window override
-    (0 = never catch up)."""
+    (0 = never catch up). delivery_surface (thread/in_channel) and wrap_response
+    override delivery presentation for this job only; None uses config."""
+    _validate_delivery_overrides({"delivery_surface": delivery_surface, "wrap_response": wrap_response})
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1939,6 +1943,7 @@ def create_job(
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
         ("timezone", f["timezone"]), ("grace_minutes", f["grace_minutes"]),
         ("catch_up", f["catch_up"]),
+        ("delivery_surface", delivery_surface), ("wrap_response", wrap_response),
     ):
         if value is not None:
             job[key] = value
@@ -2116,8 +2121,18 @@ def _fill_missing_next_run(updated: dict[str, Any]) -> None:
     updated["next_run_at"] = next_run
 
 
+def _validate_delivery_overrides(fields: dict[str, Any]) -> None:
+    surface = fields.get("delivery_surface")
+    if surface is not None and surface not in ("thread", "in_channel"):
+        raise ValueError("delivery_surface must be 'thread', 'in_channel', or None")
+    wrap = fields.get("wrap_response")
+    if wrap is not None and not isinstance(wrap, bool):
+        raise ValueError("wrap_response must be a boolean or None")
+
+
 def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
+    _validate_delivery_overrides(updates or {})
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.
     bad_fields = _IMMUTABLE_JOB_FIELDS.intersection(updates or {})
     if bad_fields:
