@@ -88,7 +88,10 @@ class AgentRoster:
                 self.root_id = sid
             elif self._find_session(self.owners, str(getattr(parent, '_parent_session_id', '') or '')) is None:
                 return  # A late child from a conversation that was reset.
+            previous = self.owners.get(sid)
+            changed = previous is None or previous[0]() is not parent
             self.owners[sid] = (_ref(parent), _ref(getattr(parent, '_session_db', None)))
+            return changed
 
     def validate_epoch(self, current_id):
         if not isinstance(current_id, str) or not current_id:
@@ -251,8 +254,8 @@ class AgentStatusFeed:
     def observe(self, parent_ref):
         roster, parent = self._roster(observe=True), parent_ref()
         if roster is not None and parent is not None:
-            roster.observe(parent)
-            self.wake.set()
+            if roster.observe(parent):
+                self.wake.set()
 
     def lifecycle(self, event):
         if (roster := self._roster(observe=True)) is not None:
