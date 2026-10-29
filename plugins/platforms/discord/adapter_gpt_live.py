@@ -119,6 +119,8 @@ class DiscordGptLiveMixin(LiveBackendMixin):
                     scope = runner._profile_scope_for_source(source) if source else nullcontext()
                     with scope:
                         session = GptLiveSession(self, gid, channel, text_id, cfg)
+                        if source is not None:
+                            session.backend_session_key = self._source_session_key(source)
                         self._gpt_live_sessions[gid] = session
                         self._voice_text_channels[gid] = int(text_id)
                         try:

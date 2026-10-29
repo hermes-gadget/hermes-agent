@@ -97,6 +97,58 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
+    @pytest.mark.asyncio
+    async def test_queue_only_voice_preserves_parent_and_delegation_fifo(self, monkeypatch):
+        """Independent voice work queues intact without weakening authorization."""
+        from dataclasses import replace
+
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+        runner, _sentinel = _make_runner()
+        runner.config.multiplex_profiles = True
+        runner._busy_input_mode = "queue"
+        runner._busy_input_modes_by_profile = {"default": "interrupt"}
+        runner._is_user_authorized = lambda source: source.user_id == "user1"
+        adapter = _make_adapter("discord")
+        source = SessionSource(
+            platform=Platform.DISCORD, chat_id="33", chat_type="channel",
+            user_id="user1", profile="default",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+        agent = MagicMock()
+        agent._active_children = []  # Queueing must not depend on subagent demotion.
+        runner._running_agents[sk] = agent
+        assert runner._effective_busy_input_mode(source) == "interrupt"
+
+        owner = object()
+        events = [
+            MessageEvent(text=text, message_type=MessageType.VOICE, source=source,
+                         message_id=f"voice-{index}", queue_only=True)
+            for index, text in enumerate(("Check the server clock", "Research the other option"))
+        ]
+        contexts = [(owner, "clock"), (owner, "research")]
+        for event, context in zip(events, contexts):
+            event._gpt_live_delegation = context
+            assert await runner._handle_active_session_busy_message(event, sk) is True
+            assert event._gateway_accepted
+
+        queued = [adapter._pending_messages[sk], *runner._overflow_queue(sk)]
+        assert queued == events and queued[0] is not queued[1]
+        assert all(event._gpt_live_delegation is context for event, context in zip(queued, contexts))
+        agent.interrupt.assert_not_called()
+        agent.steer.assert_not_called()
+        agent.redirect.assert_not_called()
+        assert runner._running_agents[sk] is agent
+
+        unauthorized = MessageEvent(
+            text="Untrusted follow-up", message_type=MessageType.VOICE,
+            source=replace(source, user_id="someone-else"), queue_only=True,
+        )
+        assert await runner._handle_active_session_busy_message(unauthorized, sk) is True
+        assert not unauthorized._gateway_accepted
+        assert [adapter._pending_messages[sk], *runner._overflow_queue(sk)] == events
+        agent.interrupt.assert_not_called()
+
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):

@@ -172,7 +172,7 @@ async def test_final_send_taps_before_delivery_without_swallowing_text(monkeypat
     token = DELEGATION_CONTEXT.set((session, "one"))
     try:
         future = asyncio.get_running_loop().create_future()
-        session.pending = PendingDelegation("one", future)
+        session.pending["one"] = PendingDelegation("one", future)
         await a.send("33", "Tool preview")
         assert not future.done()
         result = await a.send("33", "Final answer", metadata={"notify": True})
@@ -180,13 +180,13 @@ async def test_final_send_taps_before_delivery_without_swallowing_text(monkeypat
         assert channel.send.await_count == 2
         channel.send.assert_awaited_with(content="Final answer", reference=None)
 
-        session.pending = PendingDelegation("two", asyncio.get_running_loop().create_future())
+        session.pending["two"] = PendingDelegation("two", asyncio.get_running_loop().create_future())
         await a.send("33", "Late answer", metadata={"notify": True})
-        assert not session.pending.future.done()
+        assert not session.pending["two"].future.done()
         DELEGATION_CONTEXT.set((session, "two"))
         channel.send.side_effect = RuntimeError("Missing Send Messages")
         result = await a.send("33", "Still spoken", metadata={"notify": True})
-        assert not result.success and session.pending.future.result() == "Still spoken"
+        assert not result.success and session.pending["two"].future.result() == "Still spoken"
         assert a._should_auto_tts_for_chat("33") is False
         assert (await a.play_tts("33", "/unused.mp3")).success
         assert a._streaming_tts_turn_completed("session") is True
@@ -199,15 +199,15 @@ async def test_stream_completion_uses_authoritative_final_only():
     a = adapter()
     session = GptLiveSession(a, 1, None, "33", config())
     a._gpt_live_sessions[1] = session
-    session.pending = PendingDelegation("one", asyncio.get_running_loop().create_future())
+    session.pending["one"] = PendingDelegation("one", asyncio.get_running_loop().create_future())
     event = SimpleNamespace(source=SimpleNamespace(chat_id="33"))
     token = DELEGATION_CONTEXT.set((session, "one"))
     try:
         a._gpt_live_complete_stream(event)
-        assert not session.pending.future.done()
+        assert not session.pending["one"].future.done()
         event._streamed_final_response = "The completed streamed answer"
         a._gpt_live_complete_stream(event)
-        assert session.pending.future.result() == event._streamed_final_response
+        assert session.pending["one"].future.result() == event._streamed_final_response
     finally:
         DELEGATION_CONTEXT.reset(token)
 
@@ -575,7 +575,7 @@ async def test_gateway_ingress_preserves_replies_with_optional_transcript_echo(s
     a._auto_tts_default = True
     session = GptLiveSession(a, 1, None, "33", config())
     a._gpt_live_sessions[1] = session
-    session.pending = PendingDelegation("one", asyncio.get_running_loop().create_future())
+    session.pending["one"] = PendingDelegation("one", asyncio.get_running_loop().create_future())
     runner = GatewayVoiceMixin()
     runner._canonicalize = lambda source, **kwargs: source
     runner._is_user_authorized_for_source = lambda source: True
@@ -599,7 +599,7 @@ async def test_gateway_ingress_preserves_replies_with_optional_transcript_echo(s
     finally:
         DELEGATION_CONTEXT.reset(token)
     # This path creates the real delivery ledger and can wait for filesystem I/O.
-    answer = await asyncio.wait_for(asyncio.shield(session.pending.future), 30)
+    answer = await asyncio.wait_for(asyncio.shield(session.pending["one"].future), 30)
     await asyncio.gather(*tuple(a._background_tasks))
     assert answer == "Sunny."
     assert any("Check the weather" in text for text in posted) is echo_transcript
@@ -678,7 +678,7 @@ async def test_backend_progress_reaches_live_before_the_final_reply(monkeypatch,
         try:
             await session.start()
             await asyncio.wait_for(progress_received.wait(), 5)
-            assert not session.pending.future.done()
+            assert not session.pending["one"].future.done()
             assert not any(event["type"] == "session.commentary.append" for event in accepted)
             updates = [event for event in accepted if event["type"] == "session.thinking.append"]
             assert updates and all(event["delegation_id"] == "one" for event in updates)
@@ -699,7 +699,7 @@ async def test_late_backend_completion_updates_its_own_task_without_completing_a
     session = GptLiveSession(a, 1, None, "33", config())
     session._accepting_audio = True
     session._seen.update({"old", "new"})
-    session.pending = PendingDelegation("new", asyncio.get_running_loop().create_future())
+    session.pending["new"] = PendingDelegation("new", asyncio.get_running_loop().create_future())
     sent, received = [], asyncio.Event()
     async def send(event):
         sent.append(event)
@@ -715,7 +715,7 @@ async def test_late_backend_completion_updates_its_own_task_without_completing_a
         await asyncio.gather(task, return_exceptions=True)
     assert len(sent) == 1 and sent[0]["type"] == "session.thinking.append"
     assert sent[0]["delegation_id"] == "old" and "completed successfully" in sent[0]["content"]
-    assert not session.pending.future.done()
+    assert not session.pending["new"].future.done()
     session._accepting_audio = False
     session.feed_backend_progress("New update after disconnect", "new")
     assert session._backend_updates.empty()

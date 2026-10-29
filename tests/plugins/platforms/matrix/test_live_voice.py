@@ -92,6 +92,7 @@ class Binding(live.MatrixLiveMixin):
         self.source=SessionSource(platform=Platform.MATRIX,chat_id='!dm:test',chat_type='dm',user_id='@ben:test',user_name='Ben')
         self._resolve_message_context=AsyncMock(return_value=(self.source,))
         self._canonicalize=lambda source:SimpleNamespace(runtime_home=home)
+        self._source_session_key=lambda source: 'matrix-private-call'
         self.gateway_runner=SimpleNamespace(_is_user_authorized_for_source=lambda _:True,_profile_scope_for_source=lambda _:nullcontext())
         self.send=AsyncMock();self.handle_message=AsyncMock()
 
