@@ -197,7 +197,9 @@ async def test_fake_live_server_delegates_pcm_and_finalizes_usage_once(tmp_path,
         await completed.wait()
         await session.close("again")
     sent_audio = [e for e in accepted if e["type"] == "session.input_audio.append"]
-    assert len(sent_audio) == 1 and len(base64.b64decode(sent_audio[0]["audio"])) == 960
+    payloads = [base64.b64decode(event["audio"]) for event in sent_audio]
+    assert payloads and all(len(pcm) == 960 for pcm in payloads)
+    assert len([pcm for pcm in payloads if any(pcm)]) == 1
     records = [json.loads(line) for line in (tmp_path / "logs" / "gpt-live-usage.jsonl").read_text().splitlines()]
     assert len(records) == 1 and records[0]["seconds"] == 15 and records[0]["usage_confirmed"]
     assert "weather" not in json.dumps(records) and mixer.read() == SILENCE_FRAME
@@ -248,6 +250,7 @@ async def test_leave_during_start_closes_before_disconnecting_and_duplicate_star
     class StartingSession:
         def __init__(self, *args):
             self.close_requested = False
+            self.close_requested_reason = None
 
         async def start(self):
             entered.set()
@@ -423,7 +426,9 @@ async def test_disconnect_waits_for_server_final_usage(monkeypatch):
     async def serve(ws):
         await ws.recv()
         await ws.send(json.dumps({"type": "session.started", "session": {"id": "fake_live"}}))
-        assert json.loads(await ws.recv())["type"] == "session.close"
+        async for raw in ws:
+            if json.loads(raw)["type"] == "session.close":
+                break
         close_received.set()
         await finalize.wait()
         await ws.send(json.dumps({"type": "session.closed", "usage": {"seconds": 4}}))
@@ -489,9 +494,82 @@ async def test_gateway_ingress_keeps_full_discord_log_and_taps_only_final(stream
         await runner._handle_voice_channel_input(1, 22, "Check the weather", adapter=a)
     finally:
         DELEGATION_CONTEXT.reset(token)
-    answer = await asyncio.wait_for(asyncio.shield(session.pending.future), 5)
+    # This path creates the real delivery ledger and can wait for filesystem I/O.
+    answer = await asyncio.wait_for(asyncio.shield(session.pending.future), 30)
     await asyncio.gather(*tuple(a._background_tasks))
     assert answer == "Sunny."
     assert any("Check the weather" in text for text in posted)
     assert "Checking the weather" in posted
     assert "Sunny." in (edited if streamed else posted)
+
+
+@pytest.mark.asyncio
+async def test_audio_clock_keeps_sending_silence_when_discord_vad_stops():
+    a = SimpleNamespace(_gpt_live_session_ended=MagicMock())
+    session = GptLiveSession(a, 1, None, "33", config())
+    session._accepting_audio = True
+    first, finished = asyncio.Event(), asyncio.Event()
+    payloads = []
+
+    async def send(event):
+        pcm = base64.b64decode(event["audio"])
+        assert len(pcm) == 960
+        payloads.append(pcm)
+        first.set()
+        nonzero = [i for i, data in enumerate(payloads) if any(data)]
+        if nonzero and len(payloads) >= nonzero[-1] + 3:
+            finished.set()
+    session._send = send
+    task = asyncio.create_task(session._send_audio_worker())
+    try:
+        await asyncio.wait_for(first.wait(), 5)
+        # One RTP frame, then Discord emits no more packets at all.
+        session.feed_user_pcm(22, np.full(1920, 1000, dtype="<i2").tobytes())
+        await asyncio.wait_for(finished.wait(), 5)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert payloads[0] == b"\0" * 960
+    assert len([data for data in payloads if any(data)]) == 1
+    assert payloads[-2:] == [b"\0" * 960, b"\0" * 960]
+
+
+@pytest.mark.asyncio
+async def test_discord_handshake_retry_does_not_cancel_start_but_real_move_stops_it(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
+    async def serve(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"type": "session.started", "session": {"id": "fake_live"}}))
+        async for raw in ws:
+            if json.loads(raw)["type"] == "session.close":
+                await ws.send(json.dumps({"type": "session.closed", "usage": {"seconds": 0}}))
+                break
+
+    a = adapter()
+    member = SimpleNamespace(id=22, voice=None)
+    guild = SimpleNamespace(id=1, get_member=lambda _: member)
+    channel = SimpleNamespace(id=33, guild=guild)
+    member.voice = SimpleNamespace(channel=channel)
+    bot = SimpleNamespace(id=999, guild=guild)
+    a._client = SimpleNamespace(user=bot)
+    a._is_allowed_user = MagicMock(return_value=True)
+    a._gpt_live_wanted.add(1)
+    async def join(*args, **kwargs):
+        # discord.py retries a stale voice session (4006) by temporarily leaving.
+        a._gpt_live_voice_state(bot, SimpleNamespace(channel=channel), SimpleNamespace(channel=None))
+        await asyncio.sleep(0)
+        a._voice_mixers[1] = VoiceMixer()
+        return True
+    a.join_voice_channel = AsyncMock(side_effect=join)
+    a.leave_voice_channel = AsyncMock()
+    async with websockets.serve(serve, "127.0.0.1", 0) as server:
+        a._gpt_live_cfg = config(ws_url=f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}")
+        await a._start_gpt_live(channel)
+        session = a._gpt_live_sessions[1]
+        assert session.is_live and not session.close_requested and 1 in a._gpt_live_wanted
+        a.leave_voice_channel.assert_not_awaited()
+        a._gpt_live_voice_state(bot, SimpleNamespace(channel=channel), SimpleNamespace(channel=None))
+        await asyncio.gather(*tuple(a._gpt_live_tasks))
+    assert not a._gpt_live_sessions and 1 not in a._gpt_live_wanted
+    assert session.close_requested_reason == "bot_moved"
+    a.leave_voice_channel.assert_awaited_once_with(1)

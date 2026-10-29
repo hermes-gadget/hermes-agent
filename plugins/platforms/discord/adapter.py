@@ -733,6 +733,7 @@ class VoiceReceiver:
         self._speech_onset_callback = speech_onset_callback
         self._min_speech_seconds = min_speech_ms / 1000
         self._stream_speech = {}
+        self._stream_stats = defaultdict(int)
 
     # --- Lifecycle ---
 
@@ -760,6 +761,15 @@ class VoiceReceiver:
             self._decoders.clear()
             self._ssrc_to_user.clear()
         logger.info("VoiceReceiver stopped")
+        if self._stream_callback:
+            logger.info("GPT-Live microphone receiver counters: %s", dict(self._stream_stats))
+
+    def _stream_decode_failure(self, stage, error):
+        if self._stream_callback:
+            self._stream_stats[stage] += 1
+            if self._stream_stats[stage] == 1:
+                logger.warning("GPT-Live microphone decode failed (stage=%s type=%s)",
+                               stage, type(error).__name__)
 
     def pause(self):
         self._paused = True
@@ -804,6 +814,8 @@ class VoiceReceiver:
         if not self._running or self._paused:
             return
         self._packet_debug_count += 1
+        if self._stream_callback:
+            self._stream_stats["raw_packets"] += 1
         if self._packet_debug_count <= 5:
             logger.debug(
                 "Raw UDP packet: len=%d, first_bytes=%s",
@@ -824,8 +836,11 @@ class VoiceReceiver:
             # Never infer an unknown SSRC from the allowlist: another member's
             # first packet could otherwise be attributed to the configured user.
             with self._lock:
-                if self._ssrc_to_user.get(ssrc) not in self._stream_user_ids:
+                user_id = self._ssrc_to_user.get(ssrc)
+                if user_id not in self._stream_user_ids:
+                    self._stream_stats["unknown_ssrc" if user_id is None else "other_user"] += 1
                     return
+                self._stream_stats["allowed_packets"] += 1
         # Calculate dynamic RTP header size (RFC 9335 / rtpsize mode)
         cc = first_byte & 0x0F  # CSRC count
         has_extension = bool(first_byte & 0x10)  # extension bit
@@ -859,6 +874,7 @@ class VoiceReceiver:
             box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
+            self._stream_decode_failure("transport_errors", e)
             if self._packet_debug_count <= 10:
                 logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, header_size, len(encrypted))
             return
@@ -895,6 +911,7 @@ class VoiceReceiver:
                 except Exception as e:
                     # Unencrypted passthrough — use NaCl-decrypted data as-is
                     if "Unencrypted" not in str(e):
+                        self._stream_decode_failure("dave_errors", e)
                         if self._packet_debug_count <= 10:
                             logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
                         return
@@ -906,6 +923,7 @@ class VoiceReceiver:
         except Exception as e:
             with self._lock:
                 self._decoders.pop(ssrc, None)
+            self._stream_decode_failure("opus_errors", e)
             logger.debug("Opus decode error for SSRC %s; reset decoder: %s", ssrc, e)
             return
         self._capture_decoded(ssrc, pcm)
@@ -919,6 +937,7 @@ class VoiceReceiver:
             self._last_packet_time[ssrc] = now
         if not self._stream_callback or user_id not in self._stream_user_ids:
             return
+        self._stream_stats["decoded_frames"] += 1
         self._stream_callback(user_id, pcm)
         if self._speech_onset_callback:
             import numpy as np
