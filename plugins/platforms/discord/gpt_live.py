@@ -31,8 +31,8 @@ BACKEND_STATUS_INSTRUCTIONS = (
     "Hermes tools and memories are available through backend delegation. Backend progress "
     "updates are factual context about that task. Individual actions can finish before the "
     "overall backend reply is ready. Use the latest update for each task: a pending final "
-    "reply does not mean that no action has been taken. If an action's current status is "
-    "unknown, say you are waiting for an update and delegate a status check. Do not guess "
+    "reply does not mean that no action has been taken. If Ben asks for an action's status "
+    "and it is unknown, say you are waiting for an update and delegate a status check. Do not guess "
     "that work has not started or repeat an outdated status."
 )
 
