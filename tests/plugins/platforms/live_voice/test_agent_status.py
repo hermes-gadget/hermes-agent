@@ -106,6 +106,14 @@ async def test_roster_tracks_all_owned_workers_with_throttled_factual_updates(tm
         assert rows['worker-1']['current_tool'] == 'web_search' and rows['worker-1']['last_tool'] == 'terminal'
         assert all(e['type'] == 'session.thinking.append' and e['delegation_id'] is None for e in binding.wire)
         assert not any(x in json.dumps(binding.wire) for x in ('private args', '/private/transcript', 'abcdefghijklmnopqrstuvwxyz012345'))
+        session.agent_status.wake.clear()
+        with bind_subagent_parent(parent):
+            for _ in range(20):
+                observe_agent_tool(tool_name='terminal')
+        barrier = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(barrier.set_result, None)
+        await barrier
+        assert not session.agent_status.wake.is_set()  # Tool volume cannot create a roster-poll storm.
         quiet_count = len(binding.wire)
         await session.agent_status.tick(now=20)
         assert len(binding.wire) == quiet_count  # No unchanged roster spam.
