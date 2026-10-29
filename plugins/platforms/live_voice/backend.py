@@ -26,6 +26,43 @@ class BackgroundReply:
 
 
 class LiveBackendMixin:
+    def _gpt_live_agent_roster(self, session, *, observe=False):
+        # Recheck the current call, source, profile and authorization on every
+        # read/publication; an inherited tool context is insufficient by itself.
+        from .agent_status import AgentRoster
+        source = session.backend_source
+        runner = getattr(self, 'gateway_runner', None)
+        authorized = getattr(runner, '_is_user_authorized_for_source', None)
+        if ((not observe and (not session.is_live or getattr(self, '_gpt_live_sessions', {}).get(session.call_id) is not session))
+                or source is None or str(source.chat_id) != session.chat_id
+                or not session.cfg.user_id or str(source.user_id or '') != session.cfg.user_id
+                or not callable(authorized) or not authorized(source)
+                or not session.backend_session_key
+                or self._source_session_key(source) != session.backend_session_key):
+            return None
+        identity = self._canonicalize(source)
+        if identity is None or Path(identity.runtime_home).resolve() != session.home.resolve():
+            return None
+        rosters = getattr(self, '_gpt_live_agent_rosters', None)
+        if rosters is None:
+            rosters = self._gpt_live_agent_rosters = {}
+        key = (str(session.home.resolve()), session.backend_session_key, session.cfg.user_id)
+        if key not in rosters:
+            if observe and getattr(self, '_gpt_live_sessions', {}).get(session.call_id) is not session:
+                return None  # Do not revive an evicted conversation from a late hook.
+            if len(rosters) >= 8:
+                active = {(str(s.home.resolve()), s.backend_session_key, s.cfg.user_id)
+                          for s in getattr(self, '_gpt_live_sessions', {}).values() if s.is_live}
+                oldest = next((k for k in rosters if k not in active), None)
+                if oldest is not None:
+                    rosters.pop(oldest)
+            rosters[key] = AgentRoster(session.home)
+        roster = rosters[key]
+        store = getattr(self, '_session_store', None)
+        if store is not None:
+            roster.validate_epoch(store.peek_session_id(session.backend_session_key))
+        return roster
+
     def _gpt_live_active_for_chat(self, chat_id):
         return any(session.chat_id == str(chat_id)
                    for session in getattr(self, "_gpt_live_sessions", {}).values())
@@ -126,6 +163,7 @@ class LiveBackendMixin:
                     context = None  # A queued completion must not jump to a redialed call.
             else:
                 session.backend_session_key = session_key
+                session.backend_source = event.source
         token = DELEGATION_CONTEXT.set(context)
         try:
             return await super()._process_message_background(event, session_key)

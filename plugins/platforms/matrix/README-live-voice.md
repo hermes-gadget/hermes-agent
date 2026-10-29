@@ -113,3 +113,17 @@ when another request is pending. They are restricted to the same authorized
 user, profile, and conversation. A completion already queued for an old call
 will not jump to a redialed call. Jobs belong to the conversation and continue
 after hangup; their normal text results remain available.
+
+The voice model also receives a conversation-owned roster of every active
+worker, including nested agents, with task labels, current tools and verified
+outcomes. Native start/stop events retain fast jobs that finish between checks.
+The roster refreshes on those events and every ten seconds; unchanged snapshots
+stay quiet and subsequent context contains only changed workers. Useful spoken
+progress is limited to once per 45 seconds, with a
+two-minute reminder for unchanged work. Final reports still use their separate
+completion route. Tool activity never proves that an action succeeded.
+
+Tracking survives a redial and session compression; `/new` clears the roster.
+All active workers remain visible, with up to 128 inactive records plus any
+ancestors needed to track live descendants. Older history is counted explicitly
+as omitted. Status exposes no transcripts, tool arguments or raw error details.

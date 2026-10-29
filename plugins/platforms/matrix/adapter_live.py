@@ -218,6 +218,7 @@ class MatrixLiveMixin(LiveBackendMixin):
                         output_from_pcm24=lambda pcm: pcm,
                         usage_context={"platform": "matrix", "room_id": source.chat_id})
                     state.session.backend_session_key = self._source_session_key(source)
+                    state.session.backend_source = source
                     self._gpt_live_sessions[generation] = state.session
                     await state.session.start()
                 if not state.closed:
