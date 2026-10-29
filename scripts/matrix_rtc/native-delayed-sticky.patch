@@ -500,6 +500,22 @@ index c45ad4b..d7a5ebe 100644
  
  # matrix-rust-sdk carries these git pins in its own `[patch]` tables. Cargo does
  # NOT propagate a dependency's `[patch]` to the consuming workspace, so they are
+diff --git a/crates/matrix-rtc-core/src/compat/ingest.rs b/crates/matrix-rtc-core/src/compat/ingest.rs
+index bc6b1a6..87f960a 100644
+--- a/crates/matrix-rtc-core/src/compat/ingest.rs
++++ b/crates/matrix-rtc-core/src/compat/ingest.rs
+@@ -368,9 +368,9 @@ impl IngestDialect for MembershipFormat {
+         }
+     }
+ 
+-    /// The pre-sticky generation has no slots.
++    /// Legacy Element Call generations do not publish m.rtc.slot state.
+     fn reads_slots(&self) -> bool {
+-        !self.reads_state_membership()
++        matches!(self, MembershipFormat::Current)
+     }
+ 
+     fn current_membership(
 diff --git a/crates/matrix-rtc-matrix-sdk/src/sdk.rs b/crates/matrix-rtc-matrix-sdk/src/sdk.rs
 index 6ee873d..cec749a 100644
 --- a/crates/matrix-rtc-matrix-sdk/src/sdk.rs

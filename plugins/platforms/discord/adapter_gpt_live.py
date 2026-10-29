@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import logging
 
 from .gpt_live import GptLiveConfig, GptLiveSession, load_gpt_live_config
@@ -93,53 +94,72 @@ class DiscordGptLiveMixin(LiveBackendMixin):
             if not self._is_allowed_user(cfg.user_id, guild=channel.guild, is_dm=False):
                 logger.warning("GPT-Live configured user is not authorized by this Discord adapter")
                 return
+            text_id = cfg.text_channel_id or cfg.voice_channel_id
+            self._voice_sources.pop(gid, None)
+            runner = getattr(self, "gateway_runner", None)
+            home, source = self._live_voice_home, None
+            if runner and callable(getattr(runner, "_voice_input_source", None)):
+                source = runner._voice_input_source(self, gid, int(cfg.user_id), text_id)
+                identity = self._canonicalize(source)
+                if identity is None or not runner._is_user_authorized_for_source(source):
+                    return
+                home = identity.runtime_home
             owner = object()
-            if not LiveVoiceLease.claim(self._live_voice_home, owner):
+            if not LiveVoiceLease.claim(home, owner):
                 self._gpt_live_wanted.discard(gid)
                 logger.info("Live voice is busy in another transport for this profile")
-                text_channel = self._client.get_channel(int(cfg.text_channel_id or cfg.voice_channel_id))
+                text_channel = self._client.get_channel(int(text_id))
                 if text_channel:
                     await text_channel.send("I'm already in a voice call. Please try again when it ends.")
                 return
-            self._gpt_live_leases[gid] = owner
-            text_id = cfg.text_channel_id or cfg.voice_channel_id
-            self._voice_sources.pop(gid, None)
-            for attempt in range(attempts):
-                session = GptLiveSession(self, gid, channel, text_id, cfg)
-                self._gpt_live_sessions[gid] = session
-                self._voice_text_channels[gid] = int(text_id)
-                try:
-                    self._gpt_live_connecting.add(gid)
-                    try:
-                        joined = await self.join_voice_channel(channel, text_channel_id=int(text_id), live_mode=True)
-                    finally:
-                        self._gpt_live_connecting.discard(gid)
-                    if not joined:
-                        raise RuntimeError("Discord voice connection failed")
-                    session.mixer = self._voice_mixers[gid]
-                    if gid not in self._gpt_live_wanted:
-                        session.close_requested = True
-                    await session.start()
-                    if not session.close_requested and gid in self._gpt_live_wanted:
+            self._gpt_live_leases[gid] = (home, owner)
+            established, session = False, None
+            try:
+                for attempt in range(attempts):
+                    scope = runner._profile_scope_for_source(source) if source else nullcontext()
+                    with scope:
+                        session = GptLiveSession(self, gid, channel, text_id, cfg)
+                        self._gpt_live_sessions[gid] = session
+                        self._voice_text_channels[gid] = int(text_id)
+                        try:
+                            self._gpt_live_connecting.add(gid)
+                            try:
+                                joined = await self.join_voice_channel(channel, text_channel_id=int(text_id), live_mode=True)
+                            finally:
+                                self._gpt_live_connecting.discard(gid)
+                            if not joined:
+                                raise RuntimeError("Discord voice connection failed")
+                            session.mixer = self._voice_mixers[gid]
+                            if gid not in self._gpt_live_wanted:
+                                session.close_requested = True
+                            await session.start()
+                            if not session.close_requested and gid in self._gpt_live_wanted:
+                                established = True
+                                return
+                        except Exception as exc:
+                            # WebSocket exception reprs can contain auth headers.
+                            logger.warning("GPT-Live startup failed (%s)", type(exc).__name__)
+                            if attempt + 1 < attempts and gid in self._gpt_live_wanted:
+                                await session.close("start_failed")
+                                await asyncio.sleep(2)
+                                if self._gpt_live_member_present(channel) and gid in self._gpt_live_wanted:
+                                    continue
+                            await self._gpt_live_notice(text_id)
                         return
-                except Exception as exc:
-                    # Exception reprs from WebSocket transports can contain headers.
-                    logger.warning("GPT-Live startup failed (%s)", type(exc).__name__)
-                    if attempt + 1 < attempts and gid in self._gpt_live_wanted:
-                        await session.close("start_failed")
-                        await asyncio.sleep(2)
-                        if self._gpt_live_member_present(channel) and gid in self._gpt_live_wanted:
-                            continue
-                    await self._gpt_live_notice(text_id)
-                reason = session.close_requested_reason or (
-                    "start_failed" if gid in self._gpt_live_wanted else "user_left")
-                await session.close(reason)
-                self._gpt_live_sessions.pop(gid, None)
-                try:
-                    await self.leave_voice_channel(gid)
-                finally:
-                    LiveVoiceLease.release(self._live_voice_home, self._gpt_live_leases.pop(gid))
-                return
+            finally:
+                if not established:
+                    try:
+                        if session:
+                            reason = session.close_requested_reason or (
+                                "start_failed" if gid in self._gpt_live_wanted else "user_left")
+                            await session.close(reason)
+                    finally:
+                        self._gpt_live_sessions.pop(gid, None)
+                        try:
+                            await self.leave_voice_channel(gid)
+                        finally:
+                            LiveVoiceLease.release(home, owner)
+                            self._gpt_live_leases.pop(gid, None)
 
     async def _gpt_live_notice(self, text_id):
         try:
@@ -159,9 +179,9 @@ class DiscordGptLiveMixin(LiveBackendMixin):
             try:
                 await self.leave_voice_channel(guild_id)
             finally:
-                owner = self._gpt_live_leases.pop(guild_id, None)
-                if owner is not None:
-                    LiveVoiceLease.release(self._live_voice_home, owner)
+                lease = self._gpt_live_leases.pop(guild_id, None)
+                if lease is not None:
+                    LiveVoiceLease.release(*lease)
 
     def _gpt_live_session_ended(self, session, reason):
         if self._gpt_live_sessions.get(session.guild_id) is session:

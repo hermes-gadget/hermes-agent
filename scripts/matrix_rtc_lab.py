@@ -46,7 +46,8 @@ def prepare(root: Path, *, native_fix=False):
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=sdk, text=True).strip()
     if revision != SDK_REV:
         raise ValueError(f"SDK checkout must be at {SDK_REV}; refusing to replace {revision}")
-    fix_paths = ("Cargo.toml", "Cargo.lock", "crates/matrix-rtc-matrix-sdk/src/sdk.rs")
+    fix_paths = ("Cargo.toml", "Cargo.lock", "crates/matrix-rtc-matrix-sdk/src/sdk.rs",
+                 "crates/matrix-rtc-core/src/compat/ingest.rs")
     if native_fix:
         patch = ASSETS / "native-delayed-sticky.patch"
         implementation_diff = subprocess.check_output(

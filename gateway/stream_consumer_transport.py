@@ -362,7 +362,7 @@ class StreamTransportMixin:
                     # A failed send disabled edits: a preview sent now could never be updated and
                     # would stay on screen truncated next to the final reply. Send only the final.
                     return False
-                return await self._first_send(text, finalize=finalize)
+                return await self._first_send(text, finalize=finalize, is_turn_final=is_turn_final)
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final
             return await self._edit_existing(text, finalize=finalize, is_turn_final=is_turn_final)
@@ -446,7 +446,7 @@ class StreamTransportMixin:
         # send must still fire so the user gets a real message.
         return True if await self._send_draft_frame(frame_text) else None
 
-    async def _first_send(self, text: str, *, finalize: bool) -> bool:
+    async def _first_send(self, text: str, *, finalize: bool, is_turn_final: bool = True) -> bool:
         """First send, threaded to the user's message (correct topic/thread)."""
         if getattr(self, "_egress_declined", False):
             # The connector refused this destination earlier in the run (see
@@ -457,9 +457,14 @@ class StreamTransportMixin:
                 "declined this destination for this run"
             )
             return False
+        metadata = self._metadata_for_send(final=finalize, expect_edits=not finalize)
+        if finalize and not is_turn_final:
+            # A completed preamble can be the first visible send when deltas
+            # and the segment break arrive in one tick. It is still interim.
+            metadata = {**(metadata or {}), "_interim_send": True}
         result = await self.adapter.send(
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
-            metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
+            metadata=metadata)
         if not result.success:
             self._edit_supported = False
             return False

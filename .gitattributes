@@ -35,3 +35,6 @@ docker/entrypoint.sh text eol=lf
 *.html  text eol=lf
 *.svg   text eol=lf
 *.ps1   text eol=crlf
+
+# Patch context lines use a single space for unchanged blank lines.
+scripts/matrix_rtc/*.patch whitespace=-blank-at-eol

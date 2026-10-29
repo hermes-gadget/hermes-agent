@@ -59,4 +59,3 @@ class LivePlaybackBuffer:
     def active(self) -> bool:
         with self._lock:
             return bool(self._pcm)
-
