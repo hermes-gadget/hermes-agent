@@ -1,0 +1,88 @@
+{
+  "sdk_revision": "de417a84c566932192c011d9931403b304b9156b",
+  "synapse": "1.164.1",
+  "livekit": "1.13.11",
+  "lk_jwt_service": "0.9.0",
+  "production_ready": false,
+  "results": [
+    {
+      "format": "current",
+      "gate": "encrypted_duplex",
+      "exit_code": 0,
+      "elapsed_seconds": 9.44,
+      "log": "current-encrypted_duplex.log",
+      "observations": [
+        "[bob] 440 Hz energy ratio: 1.000 over 96000 samples",
+        "[alice] 660 Hz energy ratio: 1.000 over 96000 samples",
+        "HERMES_GATE duplex roster=true authenticated_peer=true forward=true reverse=true"
+      ]
+    },
+    {
+      "format": "current",
+      "gate": "crash_cleanup",
+      "exit_code": 101,
+      "elapsed_seconds": 51.1,
+      "log": "current-crash_cleanup.log",
+      "observations": [
+        "[observer-before-crash] 660 Hz energy ratio: 1.000 over 96000 samples",
+        "HERMES_GATE crash peer_removed_within_45s=false"
+      ]
+    },
+    {
+      "format": "sticky",
+      "gate": "encrypted_duplex",
+      "exit_code": 0,
+      "elapsed_seconds": 8.23,
+      "log": "sticky-encrypted_duplex.log",
+      "observations": [
+        "[bob] 440 Hz energy ratio: 1.000 over 96000 samples",
+        "[alice] 660 Hz energy ratio: 1.000 over 96000 samples",
+        "HERMES_GATE duplex roster=true authenticated_peer=true forward=true reverse=true"
+      ]
+    },
+    {
+      "format": "sticky",
+      "gate": "crash_cleanup",
+      "exit_code": 101,
+      "elapsed_seconds": 51.04,
+      "log": "sticky-crash_cleanup.log",
+      "observations": [
+        "[observer-before-crash] 660 Hz energy ratio: 1.000 over 96000 samples",
+        "HERMES_GATE crash peer_removed_within_45s=false"
+      ]
+    },
+    {
+      "format": "state",
+      "gate": "encrypted_duplex",
+      "exit_code": 0,
+      "elapsed_seconds": 9.24,
+      "log": "state-encrypted_duplex.log",
+      "observations": [
+        "[bob] 440 Hz energy ratio: 1.000 over 96000 samples",
+        "[alice] 660 Hz energy ratio: 1.000 over 96000 samples",
+        "HERMES_GATE duplex roster=true authenticated_peer=true forward=true reverse=true"
+      ]
+    },
+    {
+      "format": "state",
+      "gate": "crash_cleanup",
+      "exit_code": 0,
+      "elapsed_seconds": 34.66,
+      "log": "state-crash_cleanup.log",
+      "observations": [
+        "[observer-before-crash] 660 Hz energy ratio: 1.000 over 96000 samples",
+        "HERMES_GATE crash peer_removed_within_45s=true"
+      ]
+    }
+  ],
+  "tested_at_utc": "2026-10-29",
+  "rust": "1.99.1",
+  "clang": "21.1.8",
+  "discord_live_regression": {
+    "passed": 31,
+    "failed": 0,
+    "runner": "scripts/run_tests.sh"
+  },
+  "element_client_interoperability": "not yet run",
+  "production_changes_applied": false
+}
