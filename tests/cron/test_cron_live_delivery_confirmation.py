@@ -171,6 +171,14 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
     return error, router_calls, standalone_calls
 
 
+def test_plain_message_override_is_scoped_to_one_job():
+    job = {**_job(), "wrap_response": False}
+    _, calls, _ = _run(job, "Application recovered", _SendResult(message_id=1234), cron_cfg={"wrap_response": True})
+    assert calls[0]["text"] == "Application recovered"
+    _, other_calls, _ = _run(_job(), "Other report", _SendResult(message_id=1235), cron_cfg={"wrap_response": True})
+    assert "Cronjob Response:" in other_calls[0]["text"]
+
+
 class TestFilteredResultIsNotDelivered:
     FILTERED = {"success": True, "filtered": "silence_narration", "delivered": False}
 

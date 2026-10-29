@@ -1823,6 +1823,8 @@ def create_job(
     paused_reason: Optional[str] = None,
     pinned: bool = False,
     interpreter: Optional[str] = None,
+    delivery_surface: Optional[str] = None,
+    wrap_response: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1833,7 +1835,9 @@ def create_job(
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
-    (a venv can be rebuilt or moved after creation)."""
+    (a venv can be rebuilt or moved after creation). delivery_surface (thread/in_channel) and
+    wrap_response (bool) override delivery presentation for this job only; None uses config."""
+    _validate_delivery_overrides({"delivery_surface": delivery_surface, "wrap_response": wrap_response})
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1919,6 +1923,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
+        ("delivery_surface", delivery_surface), ("wrap_response", wrap_response),
     ):
         if value is not None:
             job[key] = value
@@ -2093,8 +2098,18 @@ def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
     updated["next_run_at"] = next_run
 
 
+def _validate_delivery_overrides(fields: Dict[str, Any]) -> None:
+    surface = fields.get("delivery_surface")
+    if surface is not None and surface not in ("thread", "in_channel"):
+        raise ValueError("delivery_surface must be 'thread', 'in_channel', or None")
+    wrap = fields.get("wrap_response")
+    if wrap is not None and not isinstance(wrap, bool):
+        raise ValueError("wrap_response must be a boolean or None")
+
+
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
+    _validate_delivery_overrides(updates or {})
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.
     bad_fields = _IMMUTABLE_JOB_FIELDS.intersection(updates or {})
     if bad_fields:

@@ -53,6 +53,10 @@ Keep future changes focused by feature or fix. Commit the related tests alongsid
 each behavioral change, and update this inventory when a customization changes or
 upstream adopts it.
 
+Later customizations include per-job `delivery_surface` and `wrap_response`
+overrides for cron delivery. Discord supports continuable in-channel briefs;
+ordinary jobs continue to use the platform-wide delivery defaults.
+
 ## Preparing an upstream rebase
 
 Use a separate worktree; the running installation should stay on its current
