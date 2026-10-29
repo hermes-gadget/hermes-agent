@@ -5,13 +5,18 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from .gpt_live import DELEGATION_CONTEXT, GptLiveConfig, GptLiveSession, load_gpt_live_config
+from .gpt_live import GptLiveConfig, GptLiveSession, load_gpt_live_config
+from plugins.platforms.live_voice.backend import LiveBackendMixin
+from plugins.platforms.live_voice.lease import LiveVoiceLease
 
 logger = logging.getLogger(__name__)
 
 
-class DiscordGptLiveMixin:
+class DiscordGptLiveMixin(LiveBackendMixin):
     def _init_gpt_live(self):
+        from hermes_constants import get_hermes_home
+        self._live_voice_home = get_hermes_home()
+        self._gpt_live_leases = {}
         self._gpt_live_cfg = load_gpt_live_config()
         self._gpt_live_sessions = {}
         self._gpt_live_locks = {}
@@ -30,78 +35,6 @@ class DiscordGptLiveMixin:
                 logger.warning("GPT-Live lifecycle failed (%s)", type(done.exception()).__name__)
         task.add_done_callback(finished)
         return task
-
-    def _gpt_live_active_for_chat(self, chat_id):
-        return any(session.text_channel_id == str(chat_id)
-                   for session in getattr(self, "_gpt_live_sessions", {}).values())
-
-    def _gpt_live_tap_reply(self, chat_id, content, metadata):
-        if not (content or "").strip() or not metadata or not metadata.get("notify") or metadata.get("_interim_send"):
-            return
-        context = self._gpt_live_reply_context(chat_id)
-        if context:
-            session, did = context
-            session.complete_pending(content, did)
-
-    def _gpt_live_reply_context(self, chat_id):
-        context = DELEGATION_CONTEXT.get()
-        if context:
-            session, did = context
-            if (session.text_channel_id == str(chat_id)
-                    and getattr(self, "_gpt_live_sessions", {}).get(session.guild_id) is session):
-                return context
-
-    def on_assistant_commentary(self, chat_id, content):
-        super().on_assistant_commentary(chat_id, content)
-        context = self._gpt_live_reply_context(chat_id)
-        if context:
-            session, did = context
-            session.feed_backend_progress(content, did)
-
-    def _gpt_live_text_failure(self, chat_id):
-        sessions = [s for s in getattr(self, "_gpt_live_sessions", {}).values()
-                    if s.text_channel_id == str(chat_id)]
-        for session in sessions:
-            if not getattr(session, "text_failure_logged", False):
-                session.text_failure_logged = True
-                logger.warning("GPT-Live text delivery failed; check View Channel and Send Messages permissions")
-        return bool(sessions)
-
-    def _gpt_live_complete_stream(self, event):
-        # The gateway seals streamed responses by edit and can omit send(notify=True).
-        # Its processing-complete event carries the authoritative full final text.
-        final = getattr(event, "_streamed_final_response", None)
-        if final:
-            self._gpt_live_tap_reply(event.source.chat_id, final, {"notify": True})
-
-    async def handle_message(self, event):
-        context = DELEGATION_CONTEXT.get()
-        if context and context[0].text_channel_id == str(event.source.chat_id):
-            event._gpt_live_delegation = context
-        return await super().handle_message(event)
-
-    async def _process_message_background(self, event, session_key):
-        # Queued gateway turns must keep their own delegation ID, even when they
-        # drain from another turn's task. Late answers must never satisfy a new ID.
-        token = DELEGATION_CONTEXT.set(getattr(event, "_gpt_live_delegation", None))
-        try:
-            return await super()._process_message_background(event, session_key)
-        finally:
-            DELEGATION_CONTEXT.reset(token)
-
-    def _should_auto_tts_for_chat(self, chat_id):
-        context = DELEGATION_CONTEXT.get()
-        if self._gpt_live_active_for_chat(chat_id) or (context and context[0].text_channel_id == str(chat_id)):
-            return False
-        return super()._should_auto_tts_for_chat(chat_id)
-
-    def _streaming_tts_turn_completed(self, session_key, turn_marker=None, *, event=None):
-        # The voice frontend owns speech for this turn, including after a close.
-        # This also suppresses the runner's explicit /voice all fallback.
-        context = DELEGATION_CONTEXT.get() or getattr(event, "_gpt_live_delegation", None)
-        if context:
-            return True
-        return super()._streaming_tts_turn_completed(session_key, turn_marker, event=event)
 
     def _gpt_live_member_present(self, channel):
         cfg = self._gpt_live_cfg
@@ -160,6 +93,15 @@ class DiscordGptLiveMixin:
             if not self._is_allowed_user(cfg.user_id, guild=channel.guild, is_dm=False):
                 logger.warning("GPT-Live configured user is not authorized by this Discord adapter")
                 return
+            owner = object()
+            if not LiveVoiceLease.claim(self._live_voice_home, owner):
+                self._gpt_live_wanted.discard(gid)
+                logger.info("Live voice is busy in another transport for this profile")
+                text_channel = self._client.get_channel(int(cfg.text_channel_id or cfg.voice_channel_id))
+                if text_channel:
+                    await text_channel.send("I'm already in a voice call. Please try again when it ends.")
+                return
+            self._gpt_live_leases[gid] = owner
             text_id = cfg.text_channel_id or cfg.voice_channel_id
             self._voice_sources.pop(gid, None)
             for attempt in range(attempts):
@@ -193,7 +135,10 @@ class DiscordGptLiveMixin:
                     "start_failed" if gid in self._gpt_live_wanted else "user_left")
                 await session.close(reason)
                 self._gpt_live_sessions.pop(gid, None)
-                await self.leave_voice_channel(gid)
+                try:
+                    await self.leave_voice_channel(gid)
+                finally:
+                    LiveVoiceLease.release(self._live_voice_home, self._gpt_live_leases.pop(gid))
                 return
 
     async def _gpt_live_notice(self, text_id):
@@ -211,7 +156,12 @@ class DiscordGptLiveMixin:
                 return
             await session.close(reason)
             self._gpt_live_sessions.pop(guild_id, None)
-            await self.leave_voice_channel(guild_id)
+            try:
+                await self.leave_voice_channel(guild_id)
+            finally:
+                owner = self._gpt_live_leases.pop(guild_id, None)
+                if owner is not None:
+                    LiveVoiceLease.release(self._live_voice_home, owner)
 
     def _gpt_live_session_ended(self, session, reason):
         if self._gpt_live_sessions.get(session.guild_id) is session:
