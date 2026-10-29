@@ -667,7 +667,7 @@ class VoiceReceiver:
 
     def __init__(self, voice_client, allowed_user_ids: set | None = None, *, stream_callback=None,
                  stream_user_ids=None, utterance_capture=True, speech_onset_callback=None,
-                 min_speech_ms=200):
+                 min_speech_ms=200, decode_failure_callback=None):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
@@ -703,6 +703,10 @@ class VoiceReceiver:
         self._min_speech_seconds = min_speech_ms / 1000
         self._stream_speech = {}
         self._stream_stats = defaultdict(int)
+        self._decode_failure_callback = decode_failure_callback
+        self._decode_failure_since = None
+        self._decode_failure_count = 0
+        self._decode_failure_reported = False
 
         # Decode-health counters (logged at teardown) and the NaCl failure
         # streak used to detect stale credentials after a re-key.
@@ -723,7 +727,7 @@ class VoiceReceiver:
         self._install_speaking_hook(conn)
         conn.add_socket_listener(self._on_packet)
         self._running = True
-        logger.info("VoiceReceiver started (bot_ssrc=%d)", self._bot_ssrc)
+        logger.info("VoiceReceiver started (bot_ssrc=%d mode=%s)", self._bot_ssrc, conn.mode)
 
     def _resolve_credentials(self, conn) -> None:
         """Read the current decryption state from the live connection.
@@ -740,8 +744,13 @@ class VoiceReceiver:
         session object survives with the protocol at 0 and senders emit
         plaintext.
         """
+        key = bytes(conn.secret_key)
+        if self._secret_key and key != self._secret_key:
+            with self._lock:
+                self._decoders.clear()
+            self._stream_stats["key_updates"] += 1
         self._creds = (
-            bytes(conn.secret_key),
+            key,
             conn.dave_session,
             int(getattr(conn, "dave_protocol_version", 0) or 0),
             bool(getattr(conn, "dave_downgraded", False)),
@@ -837,6 +846,18 @@ class VoiceReceiver:
             if self._stream_stats[stage] == 1:
                 logger.warning("GPT-Live microphone decode failed (stage=%s type=%s)",
                                stage, type(error).__name__)
+        if self._decode_failure_callback and not self._decode_failure_reported:
+            now = time.monotonic()
+            if self._decode_failure_since is None:
+                self._decode_failure_since = now
+            self._decode_failure_count += 1
+            # Only packets for mapped, allowlisted speakers reach this point
+            # in live mode. Silence and isolated transition losses cannot trigger
+            # recovery; a sustained undecodable stream can.
+            if self._decode_failure_count >= 50 and now - self._decode_failure_since >= 2:
+                self._decode_failure_reported = True
+                logger.warning("GPT-Live microphone remained undecodable; requesting voice reconnect")
+                self._decode_failure_callback()
 
     def pause(self):
         self._paused = True
@@ -922,6 +943,10 @@ class VoiceReceiver:
         if not self._running or self._paused:
             return
 
+        conn = self._vc._connection
+        if (bytes(conn.secret_key) != self._secret_key or conn.dave_session is not self._dave_session):
+            self.refresh_credentials("packet credential change")
+
         # One consistent credential generation for this packet — a refresh
         # on another thread swaps the whole tuple, never half of it.
         secret_key, dave_session, dave_pver, _dave_downgraded = self._creds
@@ -944,7 +969,7 @@ class VoiceReceiver:
             return
         first_byte = data[0]
         _, _, seq, _timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
-        if ssrc == self._bot_ssrc:
+        if ssrc == self._vc._connection.ssrc:
             return
         if self._stream_callback:
             # Never infer an unknown SSRC from the allowlist: another member's
@@ -1006,6 +1031,10 @@ class VoiceReceiver:
             # REKEY_FAILURE_STREAK packets while the failure persists.
             if self._nacl_fail_streak >= self.REKEY_FAILURE_STREAK:
                 self.refresh_credentials("decrypt-failure streak")
+            if self._stream_stats["transport_errors"] == 1:
+                logger.warning("Discord receive transport metadata (mode=%s flags=%02x header=%d extension_bytes=%d)",
+                               getattr(self._vc._connection, "mode", "unknown"),
+                               first_byte, header_size, ext_data_len)
             return
         # Skip encrypted extension data to get the actual opus payload
         if ext_data_len and len(decrypted) > ext_data_len:
@@ -1086,6 +1115,8 @@ class VoiceReceiver:
             logger.debug("Opus decode error for SSRC %s; reset decoder: %s", ssrc, e)
             return
         self._capture_decoded(ssrc, pcm)
+        self._decode_failure_since = None
+        self._decode_failure_count = 0
 
     def _capture_decoded(self, ssrc, pcm):
         now = time.monotonic()
@@ -3862,10 +3893,13 @@ class DiscordAdapter(DiscordGptLiveMixin, DiscordAuthorizationMixin, DiscordMedi
                 live_kwargs = {}
                 if live_mode:
                     session = self._gpt_live_sessions[guild_id]
+                    loop = asyncio.get_running_loop()
                     live_kwargs = dict(
                         stream_callback=session.feed_user_pcm, stream_user_ids={session.cfg.user_id},
                         utterance_capture=False, speech_onset_callback=session.note_user_speech,
                         min_speech_ms=session.cfg.barge_in_min_speech_ms,
+                        decode_failure_callback=lambda: loop.call_soon_threadsafe(
+                            self._gpt_live_receive_failed, session),
                     )
                 receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids, **live_kwargs)
                 receiver.start()
