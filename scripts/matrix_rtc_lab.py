@@ -8,6 +8,7 @@ Nothing in this script logs in to the production homeserver or restarts Hermes.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ import time
 
 SDK_URL = "https://github.com/element-hq/matrix-rust-rtc.git"
 SDK_REV = "de417a84c566932192c011d9931403b304b9156b"
+MATRIX_SDK_REV = "c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
+FIXED_MATRIX_SDK_REV = "f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
 BUILDER = "hermes-matrix-rtc-build:20261029"
 PROJECT = "hermes-matrix-rtc-lab"
 ASSETS = Path(__file__).resolve().with_name("matrix_rtc")
@@ -33,7 +36,7 @@ def run(args, *, cwd=None, log=None, env=None, timeout=5400):
                               stderr=subprocess.STDOUT, timeout=timeout)
 
 
-def prepare(root: Path):
+def prepare(root: Path, *, native_fix=False):
     root.mkdir(parents=True, exist_ok=True)
     sdk = root / "matrix-rust-rtc"
     if not sdk.exists():
@@ -43,6 +46,21 @@ def prepare(root: Path):
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=sdk, text=True).strip()
     if revision != SDK_REV:
         raise ValueError(f"SDK checkout must be at {SDK_REV}; refusing to replace {revision}")
+    fix_paths = ("Cargo.toml", "Cargo.lock", "crates/matrix-rtc-matrix-sdk/src/sdk.rs")
+    if native_fix:
+        patch = ASSETS / "native-delayed-sticky.patch"
+        implementation_diff = subprocess.check_output(
+            ["git", "diff", "--binary", "HEAD", "--", *fix_paths], cwd=sdk)
+        if not implementation_diff:
+            run(["git", "apply", str(patch)], cwd=sdk)
+        elif implementation_diff != patch.read_bytes():
+            raise ValueError("SDK implementation differs from the qualified native fix")
+    changed = subprocess.check_output(["git", "diff", "HEAD", "--name-only"], cwd=sdk, text=True).splitlines()
+    allowed = {"crates/matrix-rtc-call-sdk/tests/e2e_call/main.rs"}
+    if native_fix:
+        allowed.update(fix_paths)
+    if set(changed) - allowed:
+        raise ValueError("SDK has implementation or dependency edits; baseline qualification requires the pinned sources")
 
     tests = sdk / "crates/matrix-rtc-call-sdk/tests/e2e_call"
     main = tests / "main.rs"
@@ -96,6 +114,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stage", choices=("prepare", "build", "test", "down"))
     parser.add_argument("--work-dir", type=Path, required=True)
+    parser.add_argument("--native-fix", action="store_true", help="apply the pinned delayed-sticky SDK fix")
     parser.add_argument("--format", choices=FORMATS, action="append", dest="formats")
     args = parser.parse_args()
     root = args.work_dir.expanduser().resolve()
@@ -104,10 +123,10 @@ def main():
         run(compose(root, "down", "-v"))
         return 0
     if args.stage == "prepare":
-        prepare(root)
+        prepare(root, native_fix=args.native_fix)
         return 0
     if args.stage == "build":
-        prepare(root)
+        prepare(root, native_fix=args.native_fix)
         run(["docker", "build", "-t", BUILDER, str(ASSETS)])
         build = run(container(root, "cargo", "test", "--locked", "-p", "matrix-rtc-call-sdk",
                               "--features", "matrix-sdk,testing", "--test", "e2e_call", "--no-run"),
@@ -115,6 +134,7 @@ def main():
         print(f"Native build exit={build.returncode}; log={root / 'native-build.log'}")
         return build.returncode
 
+    prepare(root, native_fix=args.native_fix)
     results = []
     try:
         run(compose(root, "up", "-d", "--wait"), timeout=600)
@@ -132,7 +152,12 @@ def main():
                 print(json.dumps(row), flush=True)
     finally:
         receipt = {"sdk_revision": SDK_REV, "synapse": "1.164.1", "livekit": "1.13.11",
-                   "lk_jwt_service": "0.9.0", "production_ready": False, "results": results}
+                   "lk_jwt_service": "0.9.0", "production_ready": False, "results": results,
+                   "native_fix": args.native_fix,
+                   "matrix_sdk_revision": FIXED_MATRIX_SDK_REV if args.native_fix else MATRIX_SDK_REV,
+                   "lockfile_sha256": hashlib.sha256((root / "matrix-rust-rtc/Cargo.lock").read_bytes()).hexdigest()}
+        if args.native_fix:
+            receipt["source_patch_sha256"] = hashlib.sha256((ASSETS / "native-delayed-sticky.patch").read_bytes()).hexdigest()
         (root / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
         run(compose(root, "down", "-v"), timeout=120)
     return 0 if results and all(r["exit_code"] == 0 for r in results) else 1

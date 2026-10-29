@@ -1,0 +1,81 @@
+{
+  "rtc_revision": "de417a84c566932192c011d9931403b304b9156b",
+  "matrix_sdk_revision": "f076a9de6f59b43509d0cbbd4b1077c5c58d2c22",
+  "rtc_patch_sha256": "cc2c45c1999b0bb8afafd5eae487883d7d013d76b5a50772e0f192acc3b94823",
+  "lockfile_sha256": "f8a43e76704cf49bb285986ba0d63c2ba4e97989f750d9a48786949f47a9da43",
+  "results": [
+    {
+      "format": "current",
+      "gate": "encrypted_duplex",
+      "exit_code": 0,
+      "elapsed_seconds": 8.53,
+      "log": "fixed-current-encrypted_duplex.log",
+      "observations": [
+        "HERMES_GATE duplex roster=true authenticated_peer=true forward=true reverse=true"
+      ]
+    },
+    {
+      "format": "current",
+      "gate": "crash_cleanup",
+      "exit_code": 0,
+      "elapsed_seconds": 43.32,
+      "log": "fixed-current-crash_cleanup.log",
+      "observations": [
+        "HERMES_GATE crash peer_removed_within_45s=true"
+      ]
+    },
+    {
+      "format": "sticky",
+      "gate": "encrypted_duplex",
+      "exit_code": 0,
+      "elapsed_seconds": 7.58,
+      "log": "fixed-sticky-encrypted_duplex.log",
+      "observations": [
+        "HERMES_GATE duplex roster=true authenticated_peer=true forward=true reverse=true"
+      ]
+    },
+    {
+      "format": "sticky",
+      "gate": "crash_cleanup",
+      "exit_code": 0,
+      "elapsed_seconds": 33.35,
+      "log": "fixed-sticky-crash_cleanup.log",
+      "observations": [
+        "HERMES_GATE crash peer_removed_within_45s=true"
+      ]
+    },
+    {
+      "format": "state",
+      "gate": "encrypted_duplex",
+      "exit_code": 0,
+      "elapsed_seconds": 7.73,
+      "log": "fixed-state-encrypted_duplex.log",
+      "observations": [
+        "HERMES_GATE duplex roster=true authenticated_peer=true forward=true reverse=true"
+      ]
+    },
+    {
+      "format": "state",
+      "gate": "crash_cleanup",
+      "exit_code": 0,
+      "elapsed_seconds": 33.19,
+      "log": "fixed-state-crash_cleanup.log",
+      "observations": [
+        "HERMES_GATE crash peer_removed_within_45s=true"
+      ]
+    }
+  ],
+  "source_patch_sha256": "0ecf35a3e94621bfb3761dd4842e2cc394161b2ae2caafe59ad99b241b9cc0df",
+  "tested_at_utc": "2026-10-29",
+  "production_ready": false,
+  "element_client_interoperability": {
+    "client": "Element Web v1.12.25 / bundled Element Call",
+    "tests_passed": 2,
+    "tests_failed": 0,
+    "elapsed_seconds": 45.2,
+    "formats": [
+      "RoomState",
+      "Sticky2025"
+    ]
+  }
+}

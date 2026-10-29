@@ -8,6 +8,28 @@ transport and Element client interoperability tests.
 
 ## Qualification result: 29 October 2026
 
+The native delayed-sticky fix now passes **all six gates**, and the patched
+native client also passed the upstream Element Web/embedded Element Call
+interoperability tests in room-state and sticky modes (2 tests, 45.2 s).
+The reference client was Element Web `v1.12.25`. Ben's actual desktop and mobile
+clients still require acceptance testing after device enrolment and integration.
+
+The fix pins matrix-rust-sdk's encrypted delayed-send API from upstream PR
+[#6973](https://github.com/matrix-org/matrix-rust-sdk/pull/6973) at commit
+`f076a9de6f59b43509d0cbbd4b1077c5c58d2c22`, and changes the RTC adapter to call
+`send_raw(...).with_sticky_duration(...).into_delayed(...)`. The SDK prepares
+and encrypts the event; no custom crypto is introduced. The
+[patch](native-delayed-sticky.patch) includes the resolved lockfile, and the
+[fixed-run receipt](validation-fixed-2026-10-29.json) records six passing gates.
+The upstream API is still a draft, so this is a pinned local patch pending an
+upstream RTC release.
+
+To reproduce the fixed native run, add `--native-fix` to **each** prepare,
+build and test command below. Use separate work directories for baseline and
+patched runs; the runner refuses to overwrite unrelated SDK edits.
+
+### Original release baseline
+
 The native build succeeded. Actual SFU media tests, using independent users and
 Olm-distributed media keys, produced these results:
 
@@ -35,10 +57,10 @@ Element Call v0.26.1 documents
 [Compatibility as its default mode](https://github.com/element-hq/element-call/blob/v0.26.1/src/config/ConfigOptions.ts),
 using room-state membership. This is a viable candidate for a restricted first
 release, but these two-native-client tests do not establish compatibility with
-Ben's actual desktop and mobile builds. The full Matrix voice rollout remains
-unqualified until the sticky-mode issue is fixed or the supported client/mode
-scope is explicitly narrowed and tested. No production server or gateway
-configuration was changed during this qualification run.
+Ben's actual desktop and mobile builds. The fixed run above clears the native
+cleanup issue. The full rollout remains pending device enrolment, integration,
+production infrastructure and acceptance tests. No production configuration
+was changed during qualification.
 
 ## Run the lab
 
