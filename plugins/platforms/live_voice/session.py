@@ -33,7 +33,11 @@ BACKEND_STATUS_INSTRUCTIONS = (
     "that work has not started or repeat an outdated status. You can accept new independent "
     "requests while earlier backend work continues. Do not tell Ben he must wait for one job "
     "before asking for another. Keep each job's status distinct. Background task updates "
-    "refer to that work, not to the most recent request."
+    "refer to that work, not to the most recent request. A verified subagent roster lists "
+    "the workers owned by this conversation. Use their IDs and task labels to track all jobs; "
+    "current_tool is current activity and last_tool is only the last tool used. An ended worker "
+    "awaiting its report has no confirmed outcome yet. Give brief, useful progress updates "
+    "without reading raw roster data aloud. Background work continues when speech is interrupted."
 )
 
 class GptLiveUnavailable(RuntimeError):
@@ -92,6 +96,7 @@ class LiveVoiceSession:
         self._usage_context = dict(usage_context or {})
         self.home = Path(get_hermes_home())
         self.backend_session_key = None
+        self.backend_source = None
         self.loop = asyncio.get_running_loop()
         self.close_requested = False
         self.close_requested_reason = None
@@ -114,6 +119,7 @@ class LiveVoiceSession:
         self._backend_updates = asyncio.Queue(maxsize=32)
         self._backend_completed = set()
         self.backend_updates_sent = 0
+        self._commentary_seq = 0
         self._seen = set()
         self._transcripts = deque()
         self._transcript_size = 0
@@ -124,14 +130,19 @@ class LiveVoiceSession:
         self.input_frames = self.sent_audio_frames = self.output_audio_bytes = 0
         self.first_audio_ms = []
         self._awaiting_audio = None
+        from .agent_status import AgentStatusFeed
+        self.agent_status = AgentStatusFeed(self)
 
     @property
     def is_live(self):
         return self._accepting_audio and not self._closing and not self.close_requested
 
-    async def _send(self, event):
+    async def _send(self, event, *, guard=None):
         async with self._send_lock:
+            if guard is not None and not guard():
+                return False
             await self._ws.send(json.dumps(event))
+            return True
 
     async def start(self):
         from gateway.platforms._shared import get_scoped_secret
@@ -165,7 +176,8 @@ class LiveVoiceSession:
         self._started_at = self._last_user_audio_at = time.monotonic()
         self._accepting_audio = True
         self._tasks = [asyncio.create_task(worker()) for worker in (
-            self._send_audio_worker, self._delegation_worker, self._send_backend_updates, self._watchdog,
+            self._send_audio_worker, self._delegation_worker, self._send_backend_updates,
+            self.agent_status.run, self._watchdog,
         )]
         logger.info("GPT-Live session started (call=%s session=%s voice=%s)",
                     self.call_id, self.session_id, self.cfg.voice)
@@ -395,9 +407,15 @@ class LiveVoiceSession:
             logger.warning("GPT-Live backend update failed (%s)", type(exc).__name__)
             self._ended("transport")
 
-    async def _commentary(self, did, content):
+    async def _commentary(self, did, content, *, guard=None):
         for chunk in commentary_chunks(content):
-            await self._send({"type": "session.commentary.append", "delegation_id": did, "content": chunk})
+            self._commentary_seq += 1
+            event = {"type": "session.commentary.append", "delegation_id": did, "content": chunk,
+                     "event_id": f"commentary_{self._commentary_seq}"}
+            if guard is None:
+                await self._send(event)
+            elif not await self._send(event, guard=guard):
+                return
 
     async def _delegation_worker(self):
         active = set()

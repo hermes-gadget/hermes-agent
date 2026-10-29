@@ -7591,6 +7591,10 @@ _is_connected = _env_is_connected("DISCORD_BOT_TOKEN")
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from plugins.platforms.live_voice.agent_status import observe_agent_tool, observe_agent_lifecycle
+    ctx.register_hook('pre_tool_call', observe_agent_tool)
+    ctx.register_hook('subagent_start', observe_agent_lifecycle)
+    ctx.register_hook('subagent_stop', observe_agent_lifecycle)
     ctx.register_platform(
         name="discord",
         label="Discord",
