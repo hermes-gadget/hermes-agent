@@ -27,6 +27,7 @@ if _DISCORD_DIR not in sys.path:
     sys.path.insert(0, _DISCORD_DIR)
 
 import voice_mixer as vm
+from plugins.platforms.live_voice import playback as live_playback
 
 
 # =====================================================================
@@ -37,7 +38,7 @@ class TestVoiceMixerCore:
 
     def test_live_buffer_prime_underrun_barge_in_and_mix(self, monkeypatch):
         clock = [100.0]
-        monkeypatch.setattr(vm.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(live_playback.time, "monotonic", lambda: clock[0])
         mx = vm.VoiceMixer()
         live = mx.attach_live(prime_ms=40, mute_ms=250)
         frame = np.full(1920, 1000, dtype="<i2").tobytes()

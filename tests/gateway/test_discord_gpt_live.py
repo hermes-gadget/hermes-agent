@@ -19,9 +19,10 @@ from gateway.config import PlatformConfig
 from gateway.run_voice import GatewayVoiceMixin
 from plugins.platforms.discord.adapter import DiscordAdapter, VoiceReceiver
 from plugins.platforms.discord.gpt_live import (
-    DELEGATION_CONTEXT, GptLiveConfig, GptLiveSession, PendingDelegation,
-    commentary_chunks, load_gpt_live_config, pcm24_mono_to_pcm48_stereo, pcm48_stereo_to_pcm24_mono,
+    GptLiveConfig, GptLiveSession,
+    load_gpt_live_config, pcm24_mono_to_pcm48_stereo, pcm48_stereo_to_pcm24_mono,
 )
+from plugins.platforms.live_voice.session import DELEGATION_CONTEXT, PendingDelegation, commentary_chunks
 from plugins.platforms.discord import adapter as discord_adapter_module
 from plugins.platforms.discord import adapter_gpt_live as live_adapter_module
 from plugins.platforms.discord.voice_mixer import FRAME_SIZE, SILENCE_FRAME, VoiceMixer
