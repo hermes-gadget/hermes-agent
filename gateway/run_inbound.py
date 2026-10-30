@@ -808,7 +808,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if _handled:
             return _result
 
-        effective_busy_input_mode = self._effective_busy_input_mode(source)
+        queue_only = getattr(event, "queue_only", False) is True
+        effective_busy_input_mode = "queue" if queue_only else self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None
 
@@ -819,7 +820,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply(t("gateway.stop.force_stopped_pending"))
-            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
+            if queue_only:
+                self._queue_or_replace_pending_event(_quick_key, event)
+            else:
+                self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)

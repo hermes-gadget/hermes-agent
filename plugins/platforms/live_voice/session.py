@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import math
@@ -116,6 +117,7 @@ class LiveVoiceSession:
         self._input_remainder = self._output_remainder = b""
         self._audio = asyncio.Queue(maxsize=100)
         self._delegations = asyncio.Queue(maxsize=32)
+        self._quiet_acks = asyncio.Queue(maxsize=32)
         self._backend_updates = asyncio.Queue(maxsize=32)
         self._backend_completed = set()
         self.backend_updates_sent = 0
@@ -130,6 +132,7 @@ class LiveVoiceSession:
         self.input_frames = self.sent_audio_frames = self.output_audio_bytes = 0
         self.first_audio_ms = []
         self._awaiting_audio = None
+        self.prompt_sha256 = ''
         from .agent_status import AgentStatusFeed
         self.agent_status = AgentStatusFeed(self)
 
@@ -156,14 +159,16 @@ class LiveVoiceSession:
             open_timeout=self.START_TIMEOUT, close_timeout=self.CLOSE_TIMEOUT,
             logger=_wire_logger,
         )
+        instructions = self.cfg.instructions + "\n\n" + BACKEND_STATUS_INSTRUCTIONS
+        self.prompt_sha256 = hashlib.sha256(instructions.encode()).hexdigest()
         await self._send({
             "type": "session.start", "event_id": "start",
             "session": {
                 "model": self.cfg.model,
-                "instructions": self.cfg.instructions + "\n\n" + BACKEND_STATUS_INSTRUCTIONS,
+                "instructions": instructions,
                 "audio": {"format": {"type": "audio/pcm", "rate": 24000},
                           "output": {"voice": self.cfg.voice}},
-                "delegation": {"type": "client"}, "store": False,
+                "delegation": {"type": "client", "acknowledgement_delay_ms": 800}, "store": False,
             },
         })
         self._receiver = asyncio.create_task(self._receive())
@@ -176,11 +181,11 @@ class LiveVoiceSession:
         self._started_at = self._last_user_audio_at = time.monotonic()
         self._accepting_audio = True
         self._tasks = [asyncio.create_task(worker()) for worker in (
-            self._send_audio_worker, self._delegation_worker, self._send_backend_updates,
+            self._send_audio_worker, self._send_quiet_acks, self._delegation_worker, self._send_backend_updates,
             self.agent_status.run, self._watchdog,
         )]
-        logger.info("GPT-Live session started (call=%s session=%s voice=%s)",
-                    self.call_id, self.session_id, self.cfg.voice)
+        logger.info("GPT-Live session started (call=%s session=%s voice=%s prompt=%s)",
+                    self.call_id, self.session_id, self.cfg.voice, self.prompt_sha256[:12])
 
     def feed_user_pcm(self, user_id, pcm):
         if str(user_id) != self.cfg.user_id or not self.is_live:
@@ -316,10 +321,23 @@ class LiveVoiceSession:
         if self._closing or delegation.get("target") != "client" or not did or did in self._seen:
             return
         self._seen.add(did)
-        if self._delegations.full():
+        if self._delegations.full() or self._quiet_acks.full():
             self._ended("delegation_overflow")
             return
+        self._quiet_acks.put_nowait(did)
         self._delegations.put_nowait((did, self._transcript_seq, time.monotonic()))
+
+    async def _send_quiet_acks(self):
+        # Independent of request capacity and transcript settlement: don't let
+        # automatic "one moment" speech fill a wait for backend work.
+        try:
+            while True:
+                did = await self._quiet_acks.get()
+                await self._send({'type': 'session.thinking.append', 'delegation_id': did,
+                                  'event_id': f'quiet_ack_{did}', 'content': ''})
+        except Exception as exc:
+            logger.warning('GPT-Live acknowledgment suppression failed (%s)', type(exc).__name__)
+            self._ended('transport')
 
     def _on_usage(self, event):
         seconds = event.get("usage", {}).get("seconds")
@@ -349,8 +367,6 @@ class LiveVoiceSession:
         if self._delegations.empty():
             through_seq = self._transcript_seq
         text = "".join(t for seq, t, _ in self._transcripts if self._consumed_seq < seq <= through_seq)
-        if not text.strip():
-            text = "".join(t for seq, t, _ in self._transcripts if seq <= through_seq)[-2000:]
         self._consumed_seq = max(self._consumed_seq, through_seq)
         return " ".join(text.split())
 
@@ -390,7 +406,7 @@ class LiveVoiceSession:
                 if did is None:
                     if self.cfg.summarize_for_voice:
                         from gateway.voice_summary import summarize_for_voice
-                        content = await summarize_for_voice(content)
+                        content = await summarize_for_voice(content, preserve_style=True)
                     await self._commentary(None, "Update on background work: " + content)
                     continue
                 for chunk in commentary_chunks(content):
@@ -435,6 +451,17 @@ class LiveVoiceSession:
                 # finish in any order. The gateway still serializes its parent
                 # conversation, while native background subagents do the work.
                 text = await self._settled_request(through_seq)
+                from .coordination import is_conversational_hold
+                if not text or is_conversational_hold(text):
+                    content = (
+                        'Ben asked for a moment. Stay quiet and give him time. This does not cancel existing jobs.'
+                        if text else
+                        'No new user request since the last handoff. Do not repeat earlier tasks or start new work. '
+                        'Continue listening and use the verified status already provided.'
+                    )
+                    await self._send({'type': 'session.thinking.append', 'delegation_id': did,
+                                      'event_id': f'no_work_{did}', 'content': content})
+                    continue
                 if len(text) < 2:
                     await self._commentary(did, "I didn't catch that — could you say it again?")
                     continue
@@ -456,7 +483,7 @@ class LiveVoiceSession:
             result = await asyncio.wait_for(asyncio.shield(pending.future), self.cfg.reply_timeout_seconds)
             if self.cfg.summarize_for_voice:
                 from gateway.voice_summary import summarize_for_voice
-                result = await summarize_for_voice(result)
+                result = await summarize_for_voice(result, preserve_style=True)
             self._awaiting_audio = created_at
             await self._commentary(did, result)
         except TimeoutError:
@@ -495,6 +522,7 @@ class LiveVoiceSession:
             **self._usage_context, "session_id": self.session_id,
             "seconds": self.usage_seconds, "estimated_voice_usd": round(self.usage_seconds / 60 * 0.05, 4),
             "model": self.cfg.model, "reason": reason, "usage_confirmed": self.finalized.is_set(),
+            "prompt_sha256": self.prompt_sha256,
             "first_audio_ms_p50": statistics.median(self.first_audio_ms) if self.first_audio_ms else None,
             "delegations": self.delegations, "dropped_frames": self.dropped_frames,
             "input_frames": self.input_frames, "sent_audio_frames": self.sent_audio_frames,

@@ -38,6 +38,15 @@ _SHORTEN_PROMPT = (
     "same language as the input. Return only the rewritten summary."
 )
 
+_STYLE_SUMMARY_PROMPT = (
+    "Condense this assistant reply into a brief spoken recap in the assistant's own voice. "
+    "Preserve its warmth, familiar phrasing, contractions and light humour where present. "
+    "Keep the exact facts, numbers, names, uncertainty, job status and required user actions. "
+    "Use at most 55 words of plain conversational prose, without markdown or spoken emoji. "
+    "Return only the recap. Do not add a greeting, filler such as 'one moment', a new promise "
+    "to do work, a follow-up question, or a claim that pending work has succeeded."
+)
+
 
 def _voice_config() -> dict:
     try:
@@ -67,13 +76,14 @@ def truncate_for_voice(text: str, max_chars: int) -> str:
     return window.rstrip() + "…"
 
 
-async def summarize_for_voice(text: str) -> str:
+async def summarize_for_voice(text: str, *, preserve_style: bool = False) -> str:
     """Return a short spoken version of *text* for a voice note.
 
     Short text passes through unchanged. Long text is summarized via the
     auxiliary LLM (task ``voice_summary``); on any failure it is truncated at a
     sentence boundary. Disabled entirely by ``voice.tts_summary: false``.
     """
+    # The configured auxiliary route stays authoritative in both modes.
     cfg = _voice_config()
     if cfg.get("tts_summary", True) is False:
         return text
@@ -87,7 +97,9 @@ async def summarize_for_voice(text: str) -> str:
     summary = ""
     try:
         from agent.auxiliary_client import async_call_llm
-        for attempt, system_prompt in ((1, _SUMMARY_PROMPT), (2, _SHORTEN_PROMPT)):
+        first_prompt = _STYLE_SUMMARY_PROMPT if preserve_style else _SUMMARY_PROMPT
+        shorten = _SHORTEN_PROMPT + (' Preserve the original conversational tone.' if preserve_style else '')
+        for attempt, system_prompt in ((1, first_prompt), (2, shorten)):
             user_content = text[:8000] if attempt == 1 else summary[:2000]
             response = await async_call_llm(
                 task="voice_summary",
