@@ -103,16 +103,31 @@ do not establish those results for a user's actual installed clients.
 
 Both Matrix and Discord use the shared voice coordinator. Independent voice
 requests can remain pending concurrently (up to four), with replies matched to
-their own request. For substantial work, Hermes is instructed to use native
-background subagents, acknowledge confirmed dispatch, and return to the
-conversation while the jobs run. Existing delegation limits and approval rules
-still apply; quick answers can be handled directly.
+their own request. Voice backend turns coordinate native background subagents;
+a scoped pre-tool policy prevents the parent from doing worker tool calls itself.
+The parent can delegate, manage its jobs, inspect tool metadata and clarify a
+request, then return promptly after confirmed dispatch. Children keep their normal
+tools, delegation limits and approval rules. Simple conversation and restating
+verified results can be handled directly.
 
 Background completion reports are spoken once as separate updates, including
 when another request is pending. They are restricted to the same authorized
 user, profile, and conversation. A completion already queued for an old call
 will not jump to a redialed call. Jobs belong to the conversation and continue
 after hangup; their normal text results remain available.
+
+Queue-only admission applies at both adapter and runner busy guards, including
+the startup sentinel. Separate requests remain FIFO entries rather than merged
+steers. A delegation with no fresh transcript cannot replay an earlier request;
+standalone conversational holds such as "one moment" stay in the voice frontend.
+An immediate empty thinking append suppresses pending automatic wait acknowledgments
+while transcript settlement or backend work continues. This cancels pending
+acknowledgments, not speech that the model has already generated.
+
+Live replies retain the configured `auxiliary.voice_summary` route (DeepSeek in
+the private deployment), using a style-preserving recap before GPT-Live speaks.
+The summarizer keeps original warmth, facts, uncertainty and job status, and adds
+no new filler or promises. Ordinary voice-note summary behavior is unchanged.
 
 The voice model also receives a conversation-owned roster of every active
 worker, including nested agents, with task labels, current tools and verified

@@ -7592,7 +7592,9 @@ _is_connected = _env_is_connected("DISCORD_BOT_TOKEN")
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     from plugins.platforms.live_voice.agent_status import observe_agent_tool, observe_agent_lifecycle
+    from plugins.platforms.live_voice.coordination import enforce_voice_coordination
     ctx.register_hook('pre_tool_call', observe_agent_tool)
+    ctx.register_hook('pre_tool_call', enforce_voice_coordination)
     ctx.register_hook('subagent_start', observe_agent_lifecycle)
     ctx.register_hook('subagent_stop', observe_agent_lifecycle)
     ctx.register_platform(

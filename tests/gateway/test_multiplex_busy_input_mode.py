@@ -184,6 +184,80 @@ async def test_secondary_profile_busy_mode_controls_priority_path(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("secondary_mode", ["interrupt", "steer"])
+@pytest.mark.parametrize("pending_parent", [False, True])
+@pytest.mark.parametrize("message_type", [MessageType.VOICE, MessageType.TEXT])
+async def test_queue_only_priority_path_preserves_parent_and_request_fifo(
+    tmp_path, monkeypatch, secondary_mode, pending_parent, message_type,
+):
+    """The runner fallback queues each request, including while its agent starts."""
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "0")
+    runner = _runner(default_mode="queue")
+    adapter = await _load_profile_snapshot(runner, tmp_path / "research", secondary_mode)
+    events = [_event(profile="research") for _ in range(2)]
+    contexts = [(object(), f"request-{index}") for index in range(2)]
+    for index, (event, context) in enumerate(zip(events, contexts)):
+        event.text = f"Independent request {index}"
+        event.message_id = f"message-{index}"
+        event.message_type = message_type
+        event.queue_only = True
+        event._gpt_live_delegation = context
+
+    key = runner._session_key_for_source(events[0].source)
+    agent = MagicMock()
+    agent._active_children = []  # No automatic subagent protection may mask the regression.
+    agent._supports_active_turn_redirect = True
+    agent.steer.return_value = True
+    parent = _AGENT_PENDING_SENTINEL if pending_parent else agent
+    runner._running_agents[key] = parent
+    assert runner._effective_busy_input_mode(events[0].source) == secondary_mode
+
+    for event in events:
+        assert await runner._handle_message(event) is None
+
+    queued = [adapter._pending_messages.get(key), *(runner._overflow_queue(key) or [])]
+    assert queued == events
+    assert all(actual is original for actual, original in zip(queued, events))
+    assert all(event._gpt_live_delegation is context for event, context in zip(queued, contexts))
+    assert runner._running_agents[key] is parent
+    agent.interrupt.assert_not_called()
+    agent.redirect.assert_not_called()
+    agent.steer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_queue_only_priority_path_retains_auth_and_control_command_priority(tmp_path):
+    """Queue preference cannot bypass authorization or swallow control replies."""
+    runner = _runner(default_mode="interrupt")
+    adapter = await _load_profile_snapshot(runner, tmp_path / "research", "interrupt")
+    event = _event(profile="research")
+    event.queue_only = True
+    key = runner._session_key_for_source(event.source)
+    agent = MagicMock()
+    agent._active_children = []
+    runner._running_agents[key] = agent
+
+    runner._is_user_authorized = lambda source: False
+    await runner._handle_message(event)
+    assert not adapter._pending_messages and not runner._overflow_queue(key)
+
+    runner._is_user_authorized = lambda source: True
+    runner._handle_status_command = AsyncMock(return_value="Current status")
+    runner._handle_approve_command = AsyncMock(return_value="Approval recorded")
+    for text, expected in (("/status", "Current status"), ("/approve 1", "Approval recorded")):
+        event.text = text
+        assert await runner._handle_message(event) == expected
+    runner._handle_status_command.assert_awaited_once_with(event)
+    runner._handle_approve_command.assert_awaited_once_with(event)
+    assert not adapter._pending_messages and not runner._overflow_queue(key)
+    agent.interrupt.assert_not_called()
+    agent.redirect.assert_not_called()
+    agent.steer.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_busy_status_dispatches_through_active_session_path(tmp_path):
     """A running session still dispatches /busy through its normal handler."""
     runner = _runner(default_mode="interrupt")
