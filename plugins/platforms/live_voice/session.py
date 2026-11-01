@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from .recovery import LiveRecoveryMixin
 
 logger = logging.getLogger(__name__)
 _wire_logger = logging.getLogger(__name__ + ".wire")
@@ -82,7 +83,7 @@ class PendingDelegation:
     id: str
     future: asyncio.Future
 
-class LiveVoiceSession:
+class LiveVoiceSession(LiveRecoveryMixin):
     START_TIMEOUT = 15
     CLOSE_TIMEOUT = 15
     TRANSCRIPT_SETTLE_SECONDS = 0.25
@@ -108,6 +109,7 @@ class LiveVoiceSession:
         self._close_lock, self._send_lock = asyncio.Lock(), asyncio.Lock()
         self._ws = self._receiver = None
         self._tasks = []
+        self._init_recovery()
         self._accepting_audio = self._transport_ended = False
         self._end_notified = False
         self._start_error = None
@@ -147,24 +149,24 @@ class LiveVoiceSession:
         return self._accepting_audio and not self._closing and not self.close_requested
 
     async def _send(self, event, *, guard=None):
-        async with self._send_lock:
-            if guard is not None and not guard():
+        while True:
+            if self._recovering and event.get("type") != "session.close":
+                if event.get("type") == "session.input_audio.append":
+                    return False
+                await self._connection_ready.wait()
+            async with self._send_lock:
+                if guard is not None and not guard():
+                    return False
+                try:
+                    await self._ws.send(json.dumps(self._wire_event(event)))
+                    return True
+                except Exception:
+                    if not self._request_recovery("transport"):
+                        raise
+            if event.get("type") == "session.input_audio.append":
                 return False
-            await self._ws.send(json.dumps(event))
-            return True
 
     async def start(self):
-        from gateway.platforms._shared import get_scoped_secret
-        import websockets
-        key = get_scoped_secret("OPENAI_API_KEY") or get_scoped_secret("VOICE_TOOLS_OPENAI_KEY")
-        if not key:
-            raise GptLiveUnavailable("OpenAI project API key is missing")
-        self._ws = await websockets.connect(
-            self.cfg.ws_url, additional_headers={"Authorization": f"Bearer {key}"},
-            ping_interval=20, ping_timeout=20, max_size=8 * 1024 * 1024,
-            open_timeout=self.START_TIMEOUT, close_timeout=self.CLOSE_TIMEOUT,
-            logger=_wire_logger,
-        )
         instructions = self.cfg.instructions + "\n\n" + BACKEND_STATUS_INSTRUCTIONS
         history = []
         if self.assistant is not None:
@@ -172,21 +174,8 @@ class LiveVoiceSession:
             instructions += "\n\n" + role_instructions(self.cfg)
             history = await self.assistant.prepare()
         self.prompt_sha256 = hashlib.sha256(instructions.encode()).hexdigest()
-        await self._send({
-            "type": "session.start", "event_id": "start",
-            "session": {
-                "model": self.cfg.model,
-                "instructions": instructions,
-                "audio": {"format": {"type": "audio/pcm", "rate": 24000},
-                          "output": {"voice": self.cfg.voice}},
-                "delegation": {"type": "client", "acknowledgement_delay_ms": 800}, "store": False,
-                **({"input": history} if history else {}),
-            },
-        })
-        self._receiver = asyncio.create_task(self._receive())
-        await asyncio.wait_for(self._ready.wait(), self.START_TIMEOUT)
-        if self._start_error or not self.session_id:
-            raise GptLiveUnavailable(self._start_error or "Live transport ended during startup")
+        self._instructions = instructions
+        await self._open_connection(history)
         if self.close_requested:
             return
         self.buffer = self.mixer.attach_live(prime_ms=self.cfg.prime_ms, mute_ms=self.cfg.barge_in_mute_ms)
@@ -256,22 +245,32 @@ class LiveVoiceSession:
                     self._input_remainder = pcm[length:]
                     if length:
                         pending.extend(self._input_to_pcm24(pcm[:length]))
+                if self._recovering:
+                    self._recovery_audio.append(pending)
+                    pending.clear()
+                    deadline = max(deadline + 0.02, self.loop.time())
+                    continue
                 if len(pending) > 96000:
                     dropped = (len(pending) - 96000 + 959) // 960
                     del pending[:dropped * 960]
                     self.dropped_frames += dropped
                 frame = bytes(pending[:960])
                 del pending[:960]
-                await self._send({"type": "session.input_audio.append",
+                sent = await self._send({"type": "session.input_audio.append",
                                   "audio": base64.b64encode(frame.ljust(960, b"\0")).decode("ascii")})
-                self.sent_audio_frames += 1
+                if sent:
+                    self.sent_audio_frames += 1
+                elif self._recovering:
+                    self._recovery_audio.append(frame)
                 # Never catch up a stalled socket with a burst of stale frames.
                 deadline = max(deadline + 0.02, self.loop.time())
         except Exception as exc:
             logger.warning("GPT-Live audio send failed (%s)", type(exc).__name__)
             self._ended("transport")
 
-    async def _receive(self):
+    async def _receive(self, socket=None, generation=None):
+        socket = socket or self._ws
+        generation = self._connection_generation if generation is None else generation
         handlers = {
             "session.started": self._on_started,
             "session.input_transcript.delta": self._on_transcript,
@@ -283,7 +282,9 @@ class LiveVoiceSession:
             "error": self._on_error,
         }
         try:
-            async for raw in self._ws:
+            async for raw in socket:
+                if generation != self._connection_generation:
+                    break
                 event = json.loads(raw)
                 handler = handlers.get(event.get("type"))
                 if handler:
@@ -294,13 +295,16 @@ class LiveVoiceSession:
             if not self._closing:
                 logger.warning("GPT-Live receive failed (%s)", type(exc).__name__)
         finally:
-            self._transport_ended = True
-            self._ready.set()
-            if not self._closing:
-                self._ended("server_closed" if self.finalized.is_set() else "transport")
+            if generation == self._connection_generation:
+                self._transport_ended = True
+                self._ready.set()
+                if not self._closing:
+                    self._ended("server_closed" if self.finalized.is_set() else "transport")
 
     def _ended(self, reason):
         if self._closing or self._end_notified:
+            return
+        if self._request_recovery(reason):
             return
         self._end_notified = True
         self._accepting_audio = False
@@ -348,6 +352,10 @@ class LiveVoiceSession:
     def _on_delegation(self, event):
         delegation = event.get("delegation", {})
         did = delegation.get("id")
+        if did and self.assistant is not None:
+            vendor_id = did
+            did = f"{self._connection_generation}:{vendor_id}"
+            self._delegation_connections[did] = (self._connection_generation, vendor_id)
         if self._closing or delegation.get("target") != "client" or not did or did in self._seen:
             return
         self._seen.add(did)
@@ -567,6 +575,9 @@ class LiveVoiceSession:
             "input_frames": self.input_frames, "sent_audio_frames": self.sent_audio_frames,
             "output_audio_bytes": self.output_audio_bytes,
             "backend_updates_sent": self.backend_updates_sent,
+            "connection_generation": self._connection_generation,
+            "recoveries": self.recoveries,
+            "recovery_ms": self.recovery_durations_ms,
         }
         try:
             path = self.home / "logs" / "gpt-live-usage.jsonl"
@@ -582,6 +593,10 @@ class LiveVoiceSession:
                 return
             self._closing = True
             self._accepting_audio = False
+            if self._recovery_task is not None:
+                self._recovery_task.cancel()
+                await asyncio.gather(self._recovery_task, return_exceptions=True)
+            self._connection_ready.set()
             for task in self._tasks:
                 task.cancel()
             await asyncio.gather(*self._tasks, return_exceptions=True)

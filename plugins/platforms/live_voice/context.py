@@ -73,6 +73,7 @@ class VoiceConversationContext:
             return []
         self.scope, self.lineage = await asyncio.to_thread(self.identity)
         rows = await asyncio.to_thread(db.voice_history, self.scope, self.session.cfg.user_id, self.lineage)
+        self.segments.clear()
         self.segments.extend(rows)
         # Native text turns and spoken fragments remain separate persisted streams.
         text = await asyncio.to_thread(db.get_messages, self.lineage, limit=12, latest=True) if self.lineage else []
@@ -107,6 +108,7 @@ class VoiceConversationContext:
             return False
         self._seq += 1
         ident = str(event.get("event_id") or f"local_{self._seq}")
+        ident = f"{getattr(self.session, '_connection_generation', 0)}:{ident}"
         if ident in self._seen:
             return False
         self._seen.add(ident)
