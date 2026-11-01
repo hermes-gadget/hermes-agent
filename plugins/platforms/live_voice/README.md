@@ -89,11 +89,11 @@ Snapshots expose location, task, state, activity, observation times, pending
 input and coverage. Tool activity is not proof of success. Stale external
 activity is labelled unknown, and a `notLoaded` coding session is not called a
 current failure. Feed errors do not stop native status. Snapshots refresh every
-ten seconds; changed facts enter quiet context and new input requests can be
-spoken. Completion uses the separate verified result path. Voice context
-contains at most thirty fleet records and declares omissions; the status tool
-can filter by project or agent ID. Discord's project role receives only the
-existence/state of personal Matrix sessions, not their conversation details.
+ten seconds; only changed counts and short examples of fresh active work enter
+quiet context. Idle history and old results stay in the on-request status tool.
+New input requests can be spoken. Completion uses the separate verified result
+path. The status tool can filter by project or agent ID. Discord's project role
+receives only the existence/state of personal Matrix sessions, not their conversation details.
 
 ## Continuity and personal work
 
@@ -101,7 +101,9 @@ SessionDB stores timed voice fragments and call summaries separately from model
 messages. Input and output transcript event IDs deduplicate fragments; repeated
 words remain valid. Interruption marks affected output without pretending to
 know exact audio playback. No raw call audio is saved. Startup context combines
-bounded spoken history, recent text and verified project receipts; `/new`
+bounded historical notes, recent text and verified project receipts. Adjacent
+spoken fragments are combined into archived turns, never seeded as unfinished
+assistant speech. New calls wait for the user. `/new`
 clears conversational references and project selection, while compression keeps
 the conversation's lineage. Slow memory recall runs after audio connection
 through the existing cached memory manager.
@@ -114,6 +116,17 @@ time and timezone. No briefing schedule is created without a request. Short
 coordinator answers go directly to GPT-Live; longer reports retain the configured
 voice-summary route. Status context stays quiet instead of narrating periodic
 worker counts.
+
+With `assistant_enabled`, playback is permitted by a fresh user request or a
+verified reply/notice. Quiet context cannot reopen a completed reply; listening
+acknowledgments do not replenish it. Barge-in suppresses old speech while the
+user speaks. Continuous silence lets playback drain. Replies have a configurable
+`matrix.gpt_live.max_response_seconds` / `discord.gpt_live.max_response_seconds`
+limit (default 20 seconds of voiced output). Clear project/status questions and
+answers to recorded pending questions reach the existing backend even if the
+speaking model omits its handoff token; consumed transcript boundaries prevent
+a late token from executing the same request again. Call usage records include
+`loop_corrections` and `suppressed_output_bytes` for diagnosis.
 
 ## Validation
 

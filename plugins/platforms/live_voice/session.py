@@ -58,6 +58,7 @@ class LiveVoiceConfig:
     idle_timeout_seconds: int = 900
     max_session_minutes: int = 60
     reply_timeout_seconds: int = 180
+    max_response_seconds: int = 20
     barge_in: bool = True
     barge_in_min_speech_ms: int = 200
     barge_in_mute_ms: int = 250
@@ -140,9 +141,18 @@ class LiveVoiceSession(LiveRecoveryMixin):
         from .agent_status import AgentStatusFeed
         self.agent_status = AgentStatusFeed(self)
         self.assistant = None
+        self.turn = None
+        self._settling_request = False
+        self._fallback_through = 0
+        self._application_text = {}
+        self._input_end_ms = None
+        self.loop_corrections = 0
+        self._control_tasks = set()
         if cfg.assistant_enabled:
             from .assistant import LiveAssistant
+            from .turns import SpeakingTurn
             self.assistant = LiveAssistant(self)
+            self.turn = SpeakingTurn(cfg.max_response_seconds)
 
     @property
     def is_live(self):
@@ -190,8 +200,10 @@ class LiveVoiceSession(LiveRecoveryMixin):
                     self.assistant.observer.calls.add(self.assistant)
         self._tasks = [asyncio.create_task(worker()) for worker in (
             self._send_audio_worker, self._send_quiet_acks, self._delegation_worker, self._send_backend_updates,
-            self.agent_status.run, self._watchdog,
+            self._watchdog,
         )]
+        if self.assistant is None:
+            self._tasks.append(asyncio.create_task(self.agent_status.run()))
         if self.assistant is not None:
             self._tasks.extend(asyncio.create_task(worker()) for worker in (
                 self.assistant.conversation.run, self.assistant.conversation.recall, self.assistant.fleet.run))
@@ -229,6 +241,10 @@ class LiveVoiceSession(LiveRecoveryMixin):
             if self.buffer is not None and self.buffer.active:
                 task = asyncio.create_task(self.assistant.interactions.interrupted())
                 self._tasks.append(task)
+        if self.turn is not None:
+            self.turn.barged = True
+            if self.buffer is not None and self.buffer.active:
+                self.turn.close("interrupted")
         if self.is_live:
             self._last_user_audio_at = time.monotonic()
             if self.cfg.barge_in and self.buffer is not None:
@@ -327,6 +343,13 @@ class LiveVoiceSession(LiveRecoveryMixin):
         if not isinstance(text, str) or not text:
             return
         text = text[-8000:]
+        start, end = event.get("start_ms"), event.get("end_ms")
+        if (self._input_end_ms is not None and type(start) in (int, float)
+                and start - self._input_end_ms > 600 and text and not text[0].isspace()):
+            text = " " + text
+        self._input_end_ms = end if type(end) in (int, float) else None
+        if self.turn is not None:
+            self.turn.input(text, start, end, time.monotonic(), playing=bool(self.buffer and self.buffer.active))
         self._transcript_seq += 1
         self._transcripts.append((self._transcript_seq, text, event.get("end_ms")))
         self._transcript_size += len(text)
@@ -337,7 +360,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
 
     def _on_output_transcript(self, event):
         if self.assistant is not None:
-            self.assistant.conversation.transcript(event, "assistant")
+            self.assistant.conversation.transcript({**event, "_not_played": not self.turn.open}, "assistant")
 
     def _on_audio(self, event):
         if not self.is_live or self.buffer is None:
@@ -349,6 +372,11 @@ class LiveVoiceSession(LiveRecoveryMixin):
             if not self.output_audio_bytes:
                 logger.info("GPT-Live output PCM received (call=%s)", self.call_id)
             self.output_audio_bytes += length
+            if self.turn is not None and not self.turn.audio(pcm[:length], time.monotonic(), self._last_user_audio_at):
+                from .turns import voiced
+                if voiced(pcm[:length]) and (correction := self.turn.correction()):
+                    self._control_task(self._correct_speech(correction, self.turn.number))
+                return
             self.buffer.feed(self._output_from_pcm24(pcm[:length]))
             if self._awaiting_audio is not None:
                 self.first_audio_ms.append(round((time.monotonic() - self._awaiting_audio) * 1000, 1))
@@ -364,6 +392,8 @@ class LiveVoiceSession(LiveRecoveryMixin):
         if self._closing or delegation.get("target") != "client" or not did or did in self._seen:
             return
         self._seen.add(did)
+        if self.turn is not None:
+            self.turn.wait_for_backend()
         if self._delegations.full() or self._quiet_acks.full():
             self._ended("delegation_overflow")
             return
@@ -467,6 +497,8 @@ class LiveVoiceSession(LiveRecoveryMixin):
             self._ended("transport")
 
     async def _commentary(self, did, content, *, guard=None):
+        if self.turn is not None and (guard is None or guard()):
+            self.turn.result()
         for chunk in commentary_chunks(content):
             self._commentary_seq += 1
             event = {"type": "session.commentary.append", "delegation_id": did, "content": chunk,
@@ -497,14 +529,16 @@ class LiveVoiceSession(LiveRecoveryMixin):
                 # Reserve transcript boundaries in order; backend replies may
                 # finish in any order. The gateway still serializes its parent
                 # conversation, while native background subagents do the work.
-                text = await self._settled_request(through_seq)
+                self._settling_request = True
+                try:
+                    text = await self._settled_request(through_seq)
+                    text = self._application_text.pop(did, text)
+                finally:
+                    self._settling_request = False
                 from .coordination import is_conversational_hold
                 if not text or is_conversational_hold(text):
-                    content = (
+                    content = "" if not text else (
                         'Ben asked for a moment. Stay quiet and give him time. This does not cancel existing jobs.'
-                        if text else
-                        'No new user request since the last handoff. Do not repeat earlier tasks or start new work. '
-                        'Continue listening and use the verified status already provided.'
                     )
                     await self._send({'type': 'session.thinking.append', 'delegation_id': did,
                                       'event_id': f'no_work_{did}', 'content': content})
@@ -553,10 +587,54 @@ class LiveVoiceSession(LiveRecoveryMixin):
             if self.pending.get(did) is pending:
                 self.pending.pop(did)
 
+    def _control_task(self, coroutine):
+        task = asyncio.create_task(coroutine)
+        self._control_tasks.add(task)
+        def finished(done):
+            self._control_tasks.discard(done)
+            if not done.cancelled() and done.exception():
+                logger.warning("Live speaking-turn correction failed (%s)", type(done.exception()).__name__)
+        task.add_done_callback(finished)
+
+    async def _correct_speech(self, instruction, turn_number):
+        sent = await self._send({"type": "session.instructions.append", "delegation_id": None,
+            "event_id": f"speaking_turn_{self._connection_generation}_{turn_number}", "content": instruction},
+            guard=lambda: self.turn.number == turn_number and not self.turn.open)
+        if sent:
+            self.loop_corrections += 1
+
+    def _maybe_backend_fallback(self, now):
+        if (self.turn is None or self._recovering or self._settling_request or not self._delegations.empty()
+                or now - self._last_transcript_at < 1 or now - self._last_user_audio_at < .5
+                or self._transcript_seq <= max(self._consumed_seq, self._fallback_through)):
+            return
+        text = "".join(t for seq, t, _ in self._transcripts if seq > self._consumed_seq)
+        from .turns import requires_backend
+        from .interactions import AFFIRMATIVE, NEGATIVE, normalized_answer
+        answer = self.turn.utterance.strip()
+        foreground = next((r for r in self.assistant.interactions.cached if r["status"] == "foreground"), None)
+        pending_answer = bool(foreground and (
+            normalized_answer(answer) in AFFIRMATIVE | NEGATIVE or answer.isdigit()
+            or any(c.casefold() == answer.casefold() for c in foreground["choices"])
+            or foreground.get("native") and not foreground["choices"]))
+        if not requires_backend(text) and not pending_answer:
+            return
+        self._fallback_through = self._transcript_seq
+        did = f"application_{self._connection_generation}_{self._transcript_seq}"
+        self._delegation_connections[did] = (self._connection_generation, None)
+        self._seen.add(did)
+        if pending_answer:
+            self._application_text[did] = answer
+        self.turn.wait_for_backend()
+        self._delegations.put_nowait((did, self._transcript_seq, now))
+
     async def _watchdog(self):
         while True:
             await asyncio.sleep(1)
             now = time.monotonic()
+            if self.turn is not None:
+                self.turn.settle(now, playing=bool(self.buffer and self.buffer.active))
+                self._maybe_backend_fallback(now)
             if now - self._started_at >= self.cfg.max_session_minutes * 60:
                 self._ended("max_duration")
                 return
@@ -587,6 +665,8 @@ class LiveVoiceSession(LiveRecoveryMixin):
             "connection_generation": self._connection_generation,
             "recoveries": self.recoveries,
             "recovery_ms": self.recovery_durations_ms,
+            "loop_corrections": self.loop_corrections,
+            "suppressed_output_bytes": self.turn.suppressed_bytes if self.turn else 0,
         }
         try:
             path = self.home / "logs" / "gpt-live-usage.jsonl"
@@ -609,6 +689,9 @@ class LiveVoiceSession(LiveRecoveryMixin):
             for task in self._tasks:
                 task.cancel()
             await asyncio.gather(*self._tasks, return_exceptions=True)
+            for task in list(self._control_tasks):
+                task.cancel()
+            await asyncio.gather(*self._control_tasks, return_exceptions=True)
             if self.buffer is not None:
                 self.buffer.flush()
             try:

@@ -792,3 +792,109 @@ async def test_simultaneous_watched_completions_are_grouped_without_replacing_qu
     assert "Radio" in rig.session._commentary.call_args.args[1] and "Web" in rig.session._commentary.call_args.args[1]
     assert all(r["status"] == "delivered" for r in rig.db.voice_records("notice", rig.service.owner_key))
     assert next(r for r in await rig.service.interactions.snapshot() if r["status"] == "foreground")["prompt_id"] == question["prompt_id"]
+
+
+@pytest.mark.asyncio
+async def test_startup_history_cannot_speak_and_missing_model_handoff_is_recovered_once(rig, monkeypatch):
+    import base64
+    import websockets
+    from unittest.mock import Mock
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-key-local-only")
+    session = rig.session
+    session._send = LiveVoiceSession._send.__get__(session)
+    pcm = b"\x00\x10" * 480
+    encoded = base64.b64encode(pcm).decode()
+    query, ack, verified, done = (asyncio.Event() for _ in range(4))
+    requests = []
+    async def dispatch(text):
+        requests.append(text)
+        _, did = DELEGATION_CONTEXT.get()
+        result = await rig.service.handle({"action": "projects"}, did)
+        session.complete_pending(json.dumps(result), did)
+    session._dispatch = dispatch
+    async def server(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"type": "session.started", "session": {"id": "loop-regression"}}))
+        phase = 0
+        async for raw in ws:
+            event = json.loads(raw)
+            if event["type"] == "session.close":
+                await ws.send(json.dumps({"type": "session.closed", "usage": {"seconds": 4}}))
+                return
+            if phase == 0 and event["type"] == "session.input_audio.append":
+                await ws.send(json.dumps({"type": "session.output_transcript.delta", "event_id": "old", "delta": "Three old workers are still running."}))
+                await ws.send(json.dumps({"type": "session.output_audio.delta", "delta": encoded}))
+                phase = 1
+            elif phase == 1 and query.is_set():
+                await ws.send(json.dumps({"type": "session.input_transcript.delta", "event_id": "user1", "delta": "What projects", "start_ms": 1000, "end_ms": 1200}))
+                await ws.send(json.dumps({"type": "session.input_transcript.delta", "event_id": "user2", "delta": " have we got?", "start_ms": 1400, "end_ms": 1800}))
+                # No session.delegation.created: emulate the observed missing handoff.
+                await ws.send(json.dumps({"type": "session.output_audio.delta", "delta": encoded}))
+                phase = 2
+            elif phase == 2 and event["type"] == "session.commentary.append" and "radio" in event["content"]:
+                await ws.send(json.dumps({"type": "session.output_audio.delta", "delta": encoded}))
+                await ws.send(json.dumps({"type": "session.delegation.created", "delegation": {"target": "client", "id": "late"}}))
+                verified.set()
+                phase = 3
+            elif phase == 3 and ack.is_set():
+                await ws.send(json.dumps({"type": "session.input_transcript.delta", "event_id": "ack", "delta": "Okay", "start_ms": 4000, "end_ms": 4200}))
+                await ws.send(json.dumps({"type": "session.output_audio.delta", "delta": encoded}))
+                phase = 4
+            elif phase == 4 and event["type"] == "session.instructions.append":
+                done.set()
+    async with websockets.serve(server, "127.0.0.1", 0) as local:
+        session.cfg = replace(session.cfg, ws_url=f"ws://127.0.0.1:{local.sockets[0].getsockname()[1]}")
+        buffer = SimpleNamespace(active=False, feed=Mock(), flush=Mock())
+        session.mixer = SimpleNamespace(attach_live=lambda **kw: buffer, detach_live=lambda: None)
+        await session.start()
+        try:
+            async with asyncio.timeout(5):
+                while session.output_audio_bytes < len(pcm):
+                    await asyncio.sleep(0)
+            assert buffer.feed.call_count == 0
+            query.set()
+            await asyncio.wait_for(verified.wait(), 8)
+            async with asyncio.timeout(5):
+                while buffer.feed.call_count < 1:
+                    await asyncio.sleep(0)
+            ack.set()
+            await asyncio.wait_for(done.wait(), 5)
+            assert len(requests) == 1 and "What projects have we got?" in requests[0]
+            assert buffer.feed.call_count == 1
+        finally:
+            await session.close("test")
+
+
+@pytest.mark.asyncio
+async def test_recorded_answer_reaches_backend_without_model_token_or_old_greeting(rig):
+    import time
+    session = rig.session
+    await rig.service.handle({"action": "prompt", "question": "Fix the parser?",
+        "proposed_action": {"action": "dispatch", "project": "radio", "task": "Fix parser"}}, "proposal")
+    session._on_transcript({"event_id": "greeting", "delta": "Hello Hermes", "start_ms": 0, "end_ms": 200})
+    session._on_transcript({"event_id": "answer", "delta": "Yes", "start_ms": 1500, "end_ms": 1700})
+    session._maybe_backend_fallback(time.monotonic() + 2)
+    worker = asyncio.create_task(session._delegation_worker())
+    try:
+        event = await asyncio.wait_for(rig.started.get(), 5)
+        assert event.text == "Fix parser" and len(rig.channel.sent) == 1
+    finally:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_archived_word_fragments_are_context_data_not_unfinished_live_turns(rig):
+    rig.db.open_voice_call("old-call", "personal-key", "@ben:test", "personal")
+    rig.db.append_voice_segments("old-call", [
+        {"event_id": "a1", "speaker": "assistant", "text": "Three old"},
+        {"event_id": "a2", "speaker": "assistant", "text": " workers"},
+        {"event_id": "a3", "speaker": "assistant", "text": " were running."},
+        {"event_id": "u1", "speaker": "user", "text": "Which"},
+        {"event_id": "u2", "speaker": "user", "text": " project?"},
+    ])
+    history = await rig.service.prepare()
+    assert all(r["role"] == "developer" for r in history)
+    archive = history[0]["content"][0]["text"]
+    assert "Three old workers were running." in archive and "Which project?" in archive
+    assert "not current requests or verified live status" in archive
