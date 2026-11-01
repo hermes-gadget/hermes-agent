@@ -401,3 +401,68 @@ async def test_attached_clarification_answers_exact_question_without_starting_an
         assert rig.started.empty() and get_pending_for_session(key, include_choice_prompts=True) is entry
     finally:
         clear_session(key)
+
+
+@pytest.mark.asyncio
+async def test_transport_reconnect_preserves_call_questions_and_accepted_work(rig, monkeypatch):
+    import websockets
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-local-key")
+    session = rig.session
+    session._send = LiveVoiceSession._send.__get__(session)
+    session.RECOVERY_DELAYS = (0,)
+    session.RECOVERY_DEADLINE = 10
+    closed, connected = asyncio.Event(), asyncio.Event()
+    startups = []
+    async def server(ws):
+        initial = json.loads(await ws.recv())
+        startups.append(initial)
+        await ws.send(json.dumps({"type": "session.started", "session": {"id": f"vendor-{len(startups)}"}}))
+        if len(startups) == 1:
+            await closed.wait()
+            await ws.close(code=1011)
+            return
+        connected.set()
+        async for raw in ws:
+            if json.loads(raw)["type"] == "session.close":
+                await ws.send(json.dumps({"type": "session.closed", "usage": {"seconds": 1}}))
+                return
+    async with websockets.serve(server, "127.0.0.1", 0) as local:
+        session.cfg = replace(session.cfg, ws_url=f"ws://127.0.0.1:{local.sockets[0].getsockname()[1]}")
+        session.mixer = SimpleNamespace(attach_live=AsyncMock(), detach_live=lambda: None)
+        buffer = SimpleNamespace(feed=lambda p: None, flush=lambda: None, active=False)
+        session.mixer.attach_live = lambda **kw: buffer
+        await session.start()
+        try:
+            receipt = await rig.service.handle({"action": "dispatch", "project": "radio", "task": "Fix parser"}, "same-request")
+            await rig.started.get()
+            await rig.service.handle({"action": "prompt", "question": "Which fixture?", "choices": ["A", "B"]}, "question")
+            original = session.assistant
+            closed.set()
+            await asyncio.wait_for(connected.wait(), 10)
+            async with asyncio.timeout(10):
+                while session.recoveries != 1:
+                    await asyncio.sleep(0)
+            assert session.is_live and session.assistant is original and session.logical_session_id == "vendor-1"
+            assert session.session_id == "vendor-2"
+            assert any(receipt["request_id"] in item["content"][0]["text"] for item in startups[1]["session"]["input"])
+            assert any("Which fixture?" in item["content"][0]["text"] for item in startups[1]["session"]["input"])
+            retry = await rig.service.handle({"action": "dispatch", "project": "radio", "task": "Fix parser"}, "same-request")
+            assert retry["request_id"] == receipt["request_id"] and len(rig.channel.sent) == 1
+            rig.release.set()
+            await asyncio.gather(*list(rig.target._session_tasks.values()))
+            await asyncio.gather(*list(rig.service._result_tasks))
+            assert rig.db.voice_dispatches(rig.service.owner_key)[0]["status"] == "reported"
+        finally:
+            await session.close("test")
+    assert len(startups) == 2
+
+
+def test_recovery_audio_never_replays_a_truncated_request():
+    from plugins.platforms.live_voice.recovery import RecoveryAudio
+    audio = RecoveryAudio(seconds=1)
+    audio.append(b"a" * 24000)
+    assert audio.take() == (b"a" * 24000, False)
+    audio.append(b"a" * 48000)
+    audio.append(b"b")
+    audio.append(b"c")
+    assert audio.take() == (b"", True)

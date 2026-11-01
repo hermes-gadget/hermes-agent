@@ -146,7 +146,7 @@ class LiveAssistant:
             raise ValueError("A project task between 1 and 16000 characters is required.")
         binding = await self.projects.resolve(args.get("project"))
         request_id = str(args.get("request_id") or hashlib.sha256(
-            f"{self.owner_key}:{self.session.session_id}:{did}:{binding.channel_id}".encode()).hexdigest())
+            f"{self.owner_key}:{self.session.logical_session_id or self.session.session_id}:{did}:{binding.channel_id}".encode()).hexdigest())
         if not request_id or len(request_id) > 180:
             raise ValueError("Invalid request_id.")
         return await self.projects.dispatch(binding, ProjectDispatchRequest(request_id, task, str(args.get("context") or "")[:6000]))
