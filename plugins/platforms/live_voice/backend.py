@@ -1,4 +1,5 @@
 """Normal gateway reply and commentary taps for live voice frontends."""
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,18 @@ class BackgroundReply:
 
 
 class LiveBackendMixin:
+    def additional_toolsets_for_source(self, source):
+        from .assistant_tools import register_tools
+        extra = super().additional_toolsets_for_source(source)
+        cfg = getattr(self, "_matrix_live_cfg", None) or getattr(self, "_gpt_live_cfg", None)
+        if cfg and cfg.enabled and cfg.assistant_enabled and str(source.user_id or "") == cfg.user_id:
+            voice_channel = getattr(cfg, "text_channel_id", "") or getattr(cfg, "voice_channel_id", "")
+            if voice_channel and str(source.chat_id) != voice_channel:
+                return extra
+            register_tools()
+            return [*extra, "live_voice"]
+        return extra
+
     def _gpt_live_agent_roster(self, session, *, observe=False):
         # Recheck the current call, source, profile and authorization on every
         # read/publication; an inherited tool context is insufficient by itself.
@@ -73,6 +86,10 @@ class LiveBackendMixin:
     def _gpt_live_tap_reply(self, chat_id, content, metadata):
         if not (content or "").strip() or not metadata or not metadata.get("notify") or metadata.get("_interim_send"):
             return
+        from .projects import PROJECT_CONTEXT
+        project = PROJECT_CONTEXT.get()
+        if project and project[2] == str(chat_id):
+            project[0].project_result(project[1], content)
         context = self._gpt_live_reply_context(chat_id)
         if context:
             session, did = context
@@ -139,6 +156,11 @@ class LiveBackendMixin:
 
     async def on_processing_complete(self, event, outcome):
         self._gpt_live_complete_stream(event)
+        context = getattr(event, "_gpt_live_delegation", None)
+        if context and getattr(context[0], "assistant", None) is not None and context[0].is_live:
+            session = context[0]
+            if not session.assistant.conversation._recall_done:
+                session._tasks.append(asyncio.create_task(session.assistant.conversation.recall()))
         await super().on_processing_complete(event, outcome)
 
     async def handle_message(self, event):
@@ -149,8 +171,14 @@ class LiveBackendMixin:
         elif context is None:
             context = self._gpt_live_reply_context(event.source.chat_id)
         if context and context[0].adapter is self and context[0].chat_id == str(event.source.chat_id):
+            session = context[0]
             if not event.internal and not getattr(event, "_gpt_live_delegation", None):
-                event.channel_context = "\n\n".join(filter(None, (event.channel_context, VOICE_TASK_CONTEXT)))
+                note = VOICE_TASK_CONTEXT
+                if session.cfg.assistant_enabled:
+                    from .persona import coordinator_note
+                    note = coordinator_note(session.cfg.assistant_role)
+                    note += "\n\n" + session.assistant.turn_context()
+                event.channel_context = "\n\n".join(filter(None, (event.channel_context, note)))
                 event.queue_only = True
             event._gpt_live_delegation = context
         return await super().handle_message(event)
@@ -168,9 +196,12 @@ class LiveBackendMixin:
                 session.backend_session_key = session_key
                 session.backend_source = event.source
         token = DELEGATION_CONTEXT.set(context)
+        from .projects import PROJECT_CONTEXT
+        project_token = PROJECT_CONTEXT.set(getattr(event, "_voice_project_receipt", None))
         try:
             return await super()._process_message_background(event, session_key)
         finally:
+            PROJECT_CONTEXT.reset(project_token)
             DELEGATION_CONTEXT.reset(token)
 
     def _should_auto_tts_for_chat(self, chat_id):

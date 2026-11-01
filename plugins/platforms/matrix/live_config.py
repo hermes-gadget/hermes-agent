@@ -42,6 +42,8 @@ def load_matrix_live_config(raw=None):
                 raise ValueError(f"invalid {field.name}")
             values[field.name] = value
         cfg = MatrixLiveConfig(**values)
+        if cfg.assistant_role not in {"personal", "project"}:
+            raise ValueError("assistant_role must be personal or project")
         url = urlparse(cfg.ws_url)
         if url.scheme not in {"ws", "wss"} or not url.hostname or url.query:
             raise ValueError("invalid Live endpoint")

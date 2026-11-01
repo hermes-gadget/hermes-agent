@@ -5582,14 +5582,14 @@ class DiscordAdapter(DiscordGptLiveMixin, DiscordAuthorizationMixin, DiscordMedi
             pass
         return thread
 
-    async def _auto_create_thread(self, message: DiscordMessage) -> Optional[Any]:
+    async def _auto_create_thread(self, message: DiscordMessage, *, thread_name: Optional[str] = None) -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
         Primary path and seed-message fallback each retry once after a short backoff (transient errors).
 
         ``Cannot connect to host discord.com:443``) don't immediately burn through to the caller's failure
         path (#20243).
         """
-        thread_name = self._derive_auto_thread_name(message.content or "")
+        thread_name = thread_name or self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
         last_direct_error: Exception | None = None
