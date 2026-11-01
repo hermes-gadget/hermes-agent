@@ -898,3 +898,138 @@ async def test_archived_word_fragments_are_context_data_not_unfinished_live_turn
     archive = history[0]["content"][0]["text"]
     assert "Three old workers were running." in archive and "Which project?" in archive
     assert "not current requests or verified live status" in archive
+
+
+@pytest.mark.asyncio
+async def test_slow_voice_request_speaks_progress_without_finishing_or_replaying_work(rig, monkeypatch):
+    import base64
+    import websockets
+    from unittest.mock import Mock
+    from plugins.platforms.live_voice.session import PendingDelegation
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-local-key")
+    session = rig.session
+    session._send = LiveVoiceSession._send.__get__(session)
+    dispatched, updates = asyncio.Queue(), asyncio.Queue()
+    pcm = b"\x00\x10" * 480
+    async def dispatch(text):
+        await dispatched.put(DELEGATION_CONTEXT.get()[1])
+    session._dispatch = dispatch
+    async def server(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"type": "session.started", "session": {"id": "progress-call"}}))
+        opened = False
+        async for raw in ws:
+            event = json.loads(raw)
+            if event["type"] == "session.close":
+                await ws.send(json.dumps({"type": "session.closed", "usage": {"seconds": 1}}))
+                return
+            if not opened and event["type"] == "session.input_audio.append":
+                opened = True
+                await ws.send(json.dumps({"type": "session.input_transcript.delta", "event_id": "request",
+                    "delta": "Check my calendar", "start_ms": 0, "end_ms": 500}))
+                await ws.send(json.dumps({"type": "session.delegation.created", "delegation": {"target": "client", "id": "slow"}}))
+            if event["type"] == "session.commentary.append":
+                await ws.send(json.dumps({"type": "session.output_audio.delta", "delta": base64.b64encode(pcm).decode()}))
+                await updates.put(event)
+    async with websockets.serve(server, "127.0.0.1", 0) as local:
+        session.cfg = replace(session.cfg, ws_url=f"ws://127.0.0.1:{local.sockets[0].getsockname()[1]}")
+        buffer = SimpleNamespace(active=False, feed=Mock(), flush=Mock())
+        session.mixer = SimpleNamespace(attach_live=lambda **kw: buffer, detach_live=lambda: None)
+        await session.start()
+        try:
+            did = await asyncio.wait_for(dispatched.get(), 5)
+            other = session.loop.create_future()
+            session.pending["other"] = PendingDelegation("other", other)
+            ack = await asyncio.wait_for(updates.get(), 8)
+            now = session.loop.time() - 3
+            assert ack["delegation_id"] == "slow" and "keep talking" in ack["content"]
+            async with asyncio.timeout(5):
+                while not buffer.feed.called:
+                    await asyncio.sleep(0)
+            assert not session.pending[did].future.done() and session.turn.awaiting_backend
+            session.turn.settle(now + 10)
+            assert not session.turn.audio(pcm, now + 11, now)
+            session.feed_backend_progress("The calendar lookup is running; no booking has been made.", did)
+            async with asyncio.timeout(5):
+                while not session.request_progress.requests[did].latest:
+                    await asyncio.sleep(0)
+            await session.request_progress.tick(now + 20)
+            progress = await asyncio.wait_for(updates.get(), 5)
+            assert "no booking has been made" in progress["content"] and not other.done()
+            async with asyncio.timeout(5):
+                while buffer.feed.call_count < 2:
+                    await asyncio.sleep(0)
+            session.turn.settle(now + 25)
+            await session.request_progress.tick(now + 21)
+            assert updates.empty()
+            await session.request_progress.tick(now + 55)
+            assert "still waiting" in (await asyncio.wait_for(updates.get(), 5))["content"]
+            async with asyncio.timeout(5):
+                while buffer.feed.call_count < 3:
+                    await asyncio.sleep(0)
+            session.turn.settle(now + 60)
+            await session.request_progress.tick(now + 100)
+            assert updates.empty()
+            session.complete_pending("Your next appointment is Tuesday at 14:00.", did)
+            final = await asyncio.wait_for(updates.get(), 5)
+            assert "Tuesday" in final["content"] and not other.done() and dispatched.empty()
+            assert session.spoken_progress_sent == 3
+            session.turn.settle(now + 110)
+            await session.request_progress.tick(now + 200)
+            assert updates.empty()
+        finally:
+            await session.close("test")
+
+
+@pytest.mark.asyncio
+async def test_call_job_updates_are_scoped_changed_and_rechecked_at_the_send_lock(rig):
+    from plugins.platforms.live_voice.fleet import FleetSnapshot
+    from plugins.platforms.live_voice.session import PendingDelegation
+    session, service = rig.session, rig.service
+    session._send = LiveVoiceSession._send.__get__(session)
+    events = []
+    async def send(raw):
+        events.append(json.loads(raw))
+    session._ws = SimpleNamespace(send=send)
+    session.buffer = SimpleNamespace(active=False)
+    receipt = await service.handle({"action": "dispatch", "project": "radio", "task": "Check the parser"}, "job")
+    event = await asyncio.wait_for(rig.started.get(), 5)
+    key = receipt["session_key"]
+    rig.runner.session_store._entries[key] = SessionEntry(key, "coding", datetime.now(), datetime.now(), origin=event.source)
+    state = rig.runner._sessions[key] = SessionState()
+    state.turn.event = event
+    state.turn.agent = SimpleNamespace(get_activity_summary=lambda: {"description": "Checking parser tests"})
+    progress = session.request_progress
+    snapshot = await service.fleet.snapshot()
+    own = next(r for r in snapshot.agents if r["agent_id"] == "gateway:" + key)
+    other = {**own, "agent_id": "gateway:unrelated", "activity": "Private unrelated task"}
+    progress.observe_fleet(FleetSnapshot([own, other], snapshot.observed_at, snapshot.coverage))
+    now = session.loop.time()
+    await progress.tick(now + 46)
+    assert len(events) == 1 and "Checking parser tests" in events[0]["content"]
+    assert "Private" not in json.dumps(events) and session.turn.awaiting_backend
+    pcm = b"\x00\x10" * 480
+    assert session.turn.audio(pcm, now + 47, 0)
+    for _ in range(299):
+        assert session.turn.audio(pcm, now + 47, 0)
+    assert not session.turn.audio(pcm, now + 47, 0) and not session.turn.open
+    session.turn.settle(now + 50)
+    await progress.tick(now + 100)
+    assert len(events) == 1
+    progress.observe_fleet(FleetSnapshot([{**own, "session_id": "replacement"}], 0, {}))
+    await progress.tick(now + 160)
+    assert len(events) == 1
+    progress.observe_fleet(FleetSnapshot([{**own, "state": "idle", "activity": "Old result"}], 0, {}))
+    await progress.tick(now + 150)
+    assert len(events) == 1
+    did = "racing-request"
+    future = session.loop.create_future()
+    session.pending[did] = PendingDelegation(did, future)
+    progress.begin(did)
+    await session._send_lock.acquire()
+    task = asyncio.create_task(progress.tick(now + 200))
+    await asyncio.sleep(0)
+    future.set_result("Done")
+    session._send_lock.release()
+    await asyncio.wait_for(task, 5)
+    assert len(events) == 1 and not session.turn.open

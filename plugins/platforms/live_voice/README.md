@@ -128,6 +128,16 @@ speaking model omits its handoff token; consumed transcript boundaries prevent
 a late token from executing the same request again. Call usage records include
 `loop_corrections` and `suppressed_output_bytes` for diagnosis.
 
+Slow admitted requests get a brief spoken acknowledgment after two seconds at a
+quiet boundary. Fresh backend commentary can be spoken at most once every fifteen
+seconds; a continuing delay gets one notice after thirty seconds without an update.
+Progress keeps its original request ID and never completes a pending reply.
+Changed activity from this conversation's native children and projects dispatched
+in the current call can be spoken at forty-five-second intervals. Unrelated fleet
+work, stale observations and unchanged activity stay quiet. These updates have a
+six-second playback budget, yield to speech and holds, and do not invoke an extra
+model. Longer final reports keep the configured voice-summary route.
+
 ## Validation
 
 Run with the checkout's test interpreter through `scripts/run_tests.sh`:
