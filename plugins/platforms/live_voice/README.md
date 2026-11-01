@@ -35,8 +35,8 @@ voice:
 Keep the existing voice, credentials and custom speaking instructions. The role
 is appended to those instructions. Defaults are `personal` for Matrix and
 `project` for Discord. `assistant_enabled` defaults to false for existing
-installations; set it false and end/redial the call to restore the previous voice
-behaviour. Disabling it does not cancel project work. Use the normal `hermes
+installations; set it false, apply the normal adapter reload, and redial to restore
+the previous voice behaviour. Disabling it does not cancel project work. Use the normal `hermes
 config set` configuration interface; no extra credentials or service are needed.
 
 ## Project execution
@@ -129,3 +129,116 @@ Tests use real SessionDB, gateway identity/admission and Discord adapter code
 with fake Discord I/O, plus a local GPT-Live WebSocket server. No real Discord
 messages, paid API calls or live call audio are used. Actual Element and Discord
 clients still require listening acceptance for acoustic timing and voice style.
+
+## Questions, attachments and recovery
+
+Use `voice_assistant(action=prompt, question=..., choices=..., proposed_action=...)`
+before asking an operational question or offering an executable action. `respond`
+accepts its `prompt_id` and `response`. There is one foreground question; other
+questions remain queued. Background reports do not replace the foreground
+referent. An interrupted question must be repeated with `prompt` before assent
+executes its action. Native clarification responses are tied to their exact ID;
+tool approvals retain the native approval flow.
+
+`attach(agent_id=...)` watches an existing native Hermes root or owned child and
+returns an `attachment_id` for `steer`/`stop`. A pending native question is returned
+with the attachment. Root controls check the source, session ID, process-local
+execution generation and agent identity at admission and execution. A replaced
+run is refused, including when `/stop` would ordinarily broaden to sibling
+sessions or `/steer` would queue a new turn. Saved IDs do not restore authority
+after a gateway restart. `detach` stops monitoring. External MissionDeck/Codex
+workers remain visible through status. Discord's project role hides persisted
+personal results and artifacts as well as live personal conversation contents.
+
+A transient GPT-Live WebSocket failure now recovers within the same Matrix or
+Discord call. Four attempts with increasing delays share a 30-second deadline.
+The logical call, voice lease, pending questions and accepted backend work stay
+in place; each connection gets a new vendor session and separate usage record.
+Up to five seconds of opening speech are buffered in memory. Overflow discards
+the incomplete utterance and asks for repetition. Hangup cancels recovery; an
+authentication/configuration failure is permanent. No raw call recording is
+created and accepted actions are not replayed.
+
+## Alert preferences and briefings
+
+One observer per owner/profile is shared by the connected adapters, including
+between voice calls. It uses verified native completion hooks for watched roots
+and children. Blockers and watched completions are the default spoken notices;
+off-call blockers go to the owner's verified Matrix DM, while project results
+keep their normal Discord delivery. Ambiguous Matrix DM destinations remain
+queued until an existing personal room is configured. Resolved blockers are
+discarded before delivery; uncertain sends are retained for inspection.
+
+```yaml
+voice:
+  assistant:
+    notifications:
+      mode: watched          # decisions | watched | milestones | muted
+      timezone: Europe/London
+      quiet_hours:           # false disables unsolicited-alert quiet hours
+        start: "22:00"
+        end: "08:00"
+      # matrix_room_id: "!your-existing-personal-room:example.org"
+```
+
+`notifications(mode=..., until=...)` persists preferences using the normal
+comment-preserving config writer. `until` is an optional future ISO timestamp
+with timezone; when it expires the base mode returns. Quiet hours affect
+unsolicited notices, while direct replies and requested reminders use their
+normal delivery. Spoken notices wait for a quiet playback boundary. Optional
+milestones describe observed activity and do not claim successful completion.
+
+`briefing` starts one native background worker for a requested, role-appropriate
+briefing from configured integrations and verified project state. Unavailable
+sources must be identified. Recurring briefings require an explicit request and
+a normal `cronjob` prompt/destination; scheduled work must not call the live-only
+`voice_assistant` tool.
+
+## Screen handoffs
+
+`agents` includes verified result/artifact IDs. Use `handoff(artifact_id=...,
+destination=current|project|matrix)` to send the selected result or file. An
+explicitly produced `MEDIA:` file is frozen into the owner's native cache with
+a content hash; later edits to its source do not change the delivered artifact.
+An expired or changed cached file is refused. Arbitrary file paths are not tool
+arguments. Multiple files require an explicit artifact choice.
+
+For a missing artifact, use `handoff(produce=true, artifact_id=<project-request>,
+task=<requested-file>, destination=...)`. This posts a visible follow-up into
+the owning project conversation and completes the requested delivery after its
+verified result, including after hangup. The durable delivery receipt prevents
+replay. Native cache retention applies to frozen files; the original project
+conversation remains the source location.
+
+## Conversation evaluation
+
+The automated suite includes a real local WebSocket reconnect, native Discord
+admission/media delivery, exact clarification responses, stale execution guards,
+profile alternation, native child control, off-call alerts and deferred file
+handoffs. Fake external I/O keeps these checks free of live messages/model calls.
+
+Run the listening scenarios in actual Element and Discord clients against a
+disposable project fixture. Use each platform's normal call entry, run the
+scenario, and record the observed result; repeat each scenario three times.
+Only use dummy calendar/email/reminder data and explicitly requested test actions.
+
+```sh
+python scripts/evaluate_live_voice.py --list-scenarios
+python scripts/evaluate_live_voice.py --observations listening.jsonl \
+  --usage /path/to/profile/logs/gpt-live-usage.jsonl \
+  --require-complete --min-repeats 3 --output voice-evaluation.json
+```
+
+Each observation is one JSON line, for example:
+
+```json
+{"platform":"matrix","scenario":"foreground_followup","success":true,"wrong_target":false,"duplicate_action":false,"response_latency_ms":850,"notes":"Human-reviewed pacing and question reference."}
+```
+
+`response_latency_ms`, `interruption_ms` and `recovery_ms` are optional measured
+observations. The report distinguishes these from backend-handoff-to-generated-
+audio timings, reports p50/p90 and coverage, and deduplicates vendor usage
+snapshots. Playback counters record frames actually read by the platform mixer,
+separately from generated or discarded bytes; they are not proof of speaker
+audibility. Critical wrong-target/duplicate-action failures always fail the
+report. The reporting command only reads local files and makes no API calls.
