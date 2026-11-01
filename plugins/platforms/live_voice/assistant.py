@@ -35,6 +35,7 @@ class LiveAssistant:
         self._reported = set()
         self._context_seq = 0
         self._result_tasks = set()
+        self.progress_requests = {}
 
     @property
     def db(self):
@@ -213,7 +214,10 @@ class LiveAssistant:
             f"{self.owner_key}:{self.session.logical_session_id or self.session.session_id}:{did}:{binding.channel_id}".encode()).hexdigest())
         if not request_id or len(request_id) > 180:
             raise ValueError("Invalid request_id.")
-        return await self.projects.dispatch(binding, ProjectDispatchRequest(request_id, task, str(args.get("context") or "")[:6000]))
+        receipt = await self.projects.dispatch(binding, ProjectDispatchRequest(request_id, task, str(args.get("context") or "")[:6000]))
+        if receipt["status"] == "accepted":
+            self.progress_requests[request_id] = receipt
+        return receipt
 
     async def _continue(self, args, did):
         if self.db is None:
@@ -267,6 +271,7 @@ class LiveAssistant:
             return
         payload = {**receipt["payload"], "result": content[:12000]}
         await asyncio.to_thread(self.db.update_voice_dispatch, request_id, "reported", payload)
+        self.progress_requests.pop(request_id, None)
         session = self.session
         if self.observer is not None:
             await self.observer.project_result(request_id, payload)

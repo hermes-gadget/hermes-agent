@@ -148,11 +148,15 @@ class LiveVoiceSession(LiveRecoveryMixin):
         self._input_end_ms = None
         self.loop_corrections = 0
         self._control_tasks = set()
+        self.spoken_progress_sent = 0
+        self.request_progress = None
         if cfg.assistant_enabled:
             from .assistant import LiveAssistant
+            from .progress import RequestProgress
             from .turns import SpeakingTurn
             self.assistant = LiveAssistant(self)
             self.turn = SpeakingTurn(cfg.max_response_seconds)
+            self.request_progress = RequestProgress(self)
 
     @property
     def is_live(self):
@@ -482,6 +486,8 @@ class LiveVoiceSession(LiveRecoveryMixin):
                         content = await summarize_for_voice(content, preserve_style=True)
                     await self._commentary(None, content if self.assistant is not None else "Update on background work: " + content)
                     continue
+                if self.request_progress is not None and not final:
+                    self.request_progress.offer(did, content)
                 for chunk in commentary_chunks(content):
                     if did in self._backend_completed and not final:
                         break
@@ -496,17 +502,27 @@ class LiveVoiceSession(LiveRecoveryMixin):
             logger.warning("GPT-Live backend update failed (%s)", type(exc).__name__)
             self._ended("transport")
 
-    async def _commentary(self, did, content, *, guard=None):
-        if self.turn is not None and (guard is None or guard()):
-            self.turn.result()
+    async def _commentary(self, did, content, *, guard=None, progress=False):
+        if progress and len(content.encode("utf-8")) > 440:
+            content = content.encode("utf-8")[:440].decode("utf-8", errors="ignore").rsplit(" ", 1)[0]
+        first = True
+        def permitted():
+            nonlocal first
+            if guard is not None and not guard():
+                return False
+            if first and self.turn is not None:
+                self.turn.result(progress=progress)
+            first = False
+            return True
         for chunk in commentary_chunks(content):
             self._commentary_seq += 1
             event = {"type": "session.commentary.append", "delegation_id": did, "content": chunk,
                      "event_id": f"commentary_{self._commentary_seq}"}
-            if guard is None:
+            if guard is None and self.turn is None:
                 await self._send(event)
-            elif not await self._send(event, guard=guard):
-                return
+            elif not await self._send(event, guard=permitted):
+                return False
+        return True
 
     def _needs_voice_summary(self, content):
         return self.cfg.summarize_for_voice and (
@@ -565,6 +581,8 @@ class LiveVoiceSession(LiveRecoveryMixin):
                 if immediate is not None:
                     await self._commentary(did, immediate)
                     return
+            if self.request_progress is not None:
+                self.request_progress.begin(did)
             await self._dispatch(text)
             result = await asyncio.wait_for(asyncio.shield(pending.future), self.cfg.reply_timeout_seconds)
             if self._needs_voice_summary(result):
@@ -582,6 +600,8 @@ class LiveVoiceSession(LiveRecoveryMixin):
                 await self._commentary(did, "I hit an error while working on that.")
         finally:
             DELEGATION_CONTEXT.reset(token)
+            if self.request_progress is not None:
+                self.request_progress.end(did)
             if not pending.future.done():
                 pending.future.cancel()
             if self.pending.get(did) is pending:
@@ -635,6 +655,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
             if self.turn is not None:
                 self.turn.settle(now, playing=bool(self.buffer and self.buffer.active))
                 self._maybe_backend_fallback(now)
+                await self.request_progress.tick(now)
             if now - self._started_at >= self.cfg.max_session_minutes * 60:
                 self._ended("max_duration")
                 return
@@ -662,6 +683,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
             "input_frames": self.input_frames, "sent_audio_frames": self.sent_audio_frames,
             "output_audio_bytes": self.output_audio_bytes,
             "backend_updates_sent": self.backend_updates_sent,
+            "spoken_progress_sent": self.spoken_progress_sent,
             "connection_generation": self._connection_generation,
             "recoveries": self.recoveries,
             "recovery_ms": self.recovery_durations_ms,

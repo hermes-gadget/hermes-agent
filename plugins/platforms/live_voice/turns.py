@@ -87,22 +87,22 @@ class SpeakingTurn:
         self.awaiting_backend = True
         self.close("backend_pending")
 
-    def result(self):
+    def result(self, *, progress=False):
         self.number += 1
         self.open = True
-        self.awaiting_backend = False
+        self.awaiting_backend = progress
         self.spoken_seconds = 0
         self.spoken_bytes = 0
         self.last_voiced = None
         self.corrected = False
-        self.reason = "verified_result"
+        self.reason = "backend_progress" if progress else "verified_result"
 
     def audio(self, pcm, now, last_user_audio_at):
         speaking = voiced(pcm)
         if self.barged and now - last_user_audio_at < .3:
             self.suppressed_bytes += len(pcm)
             return False
-        if not self.open or self.awaiting_backend:
+        if not self.open or (self.awaiting_backend and self.reason != "backend_progress"):
             self.suppressed_bytes += len(pcm)
             return False
         # Live can stream silence continuously. Stop replenishing playback after
@@ -110,8 +110,9 @@ class SpeakingTurn:
         if not speaking and self.last_voiced is not None and now - self.last_voiced >= 1:
             return False
         if speaking:
-            if self.spoken_bytes + len(pcm) > self.max_seconds * 48000:
-                self.close("response_limit")
+            budget = min(self.max_seconds, 6) if self.awaiting_backend else self.max_seconds
+            if self.spoken_bytes + len(pcm) > budget * 48000:
+                self.close("backend_pending" if self.awaiting_backend else "response_limit")
                 self.suppressed_bytes += len(pcm)
                 return False
             self.spoken_bytes += len(pcm)
@@ -121,7 +122,7 @@ class SpeakingTurn:
 
     def settle(self, now, *, playing=False):
         if self.open and self.last_voiced is not None and not playing and now - self.last_voiced >= 2:
-            self.close("reply_finished")
+            self.close("backend_pending" if self.awaiting_backend else "reply_finished")
 
     def correction(self):
         if self.open or self.corrected:
@@ -130,5 +131,5 @@ class SpeakingTurn:
         if self.reason == "startup":
             return "This is a new call. Stop speaking and wait for Ben to speak. Historical notes are reference data; do not resume or recap old conversations."
         if self.reason == "backend_pending":
-            return "A fresh backend lookup is pending. Stop answering from history and wait for its verified result. Do not repeat acknowledgments or status."
+            return "A fresh backend lookup is pending. Stop answering from history. Speak only a new application-supplied progress update or its verified result; don't repeat earlier acknowledgments or status."
         return "This reply is complete. Stop speaking and wait for a new substantive user request. Listening sounds and acknowledgments do not request another update. Background work continues."

@@ -226,6 +226,7 @@ class FleetStatusProvider:
         while self.assistant.session.is_live:
             try:
                 result = await self.snapshot()
+                self.assistant.session.request_progress.observe_fleet(result)
                 snapshot = result.as_dict()
                 # Idle conversation history, old results and ticking timestamps belong in
                 # on-request tools, not in a repeated stream to the speaking model.
