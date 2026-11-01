@@ -47,6 +47,8 @@ class GptLiveUnavailable(RuntimeError):
 @dataclass(frozen=True)
 class LiveVoiceConfig:
     enabled: bool = False
+    assistant_enabled: bool = False
+    assistant_role: str = "personal"
     user_id: str = ""
     model: str = "gpt-live-1"
     voice: str = "gleam"
@@ -135,6 +137,10 @@ class LiveVoiceSession:
         self.prompt_sha256 = ''
         from .agent_status import AgentStatusFeed
         self.agent_status = AgentStatusFeed(self)
+        self.assistant = None
+        if cfg.assistant_enabled:
+            from .assistant import LiveAssistant
+            self.assistant = LiveAssistant(self)
 
     @property
     def is_live(self):
@@ -160,6 +166,11 @@ class LiveVoiceSession:
             logger=_wire_logger,
         )
         instructions = self.cfg.instructions + "\n\n" + BACKEND_STATUS_INSTRUCTIONS
+        history = []
+        if self.assistant is not None:
+            from .persona import role_instructions
+            instructions += "\n\n" + role_instructions(self.cfg)
+            history = await self.assistant.prepare()
         self.prompt_sha256 = hashlib.sha256(instructions.encode()).hexdigest()
         await self._send({
             "type": "session.start", "event_id": "start",
@@ -169,6 +180,7 @@ class LiveVoiceSession:
                 "audio": {"format": {"type": "audio/pcm", "rate": 24000},
                           "output": {"voice": self.cfg.voice}},
                 "delegation": {"type": "client", "acknowledgement_delay_ms": 800}, "store": False,
+                **({"input": history} if history else {}),
             },
         })
         self._receiver = asyncio.create_task(self._receive())
@@ -180,10 +192,15 @@ class LiveVoiceSession:
         self.buffer = self.mixer.attach_live(prime_ms=self.cfg.prime_ms, mute_ms=self.cfg.barge_in_mute_ms)
         self._started_at = self._last_user_audio_at = time.monotonic()
         self._accepting_audio = True
+        if self.assistant is not None:
+            await self.assistant.conversation.started()
         self._tasks = [asyncio.create_task(worker()) for worker in (
             self._send_audio_worker, self._send_quiet_acks, self._delegation_worker, self._send_backend_updates,
             self.agent_status.run, self._watchdog,
         )]
+        if self.assistant is not None:
+            self._tasks.extend(asyncio.create_task(worker()) for worker in (
+                self.assistant.conversation.run, self.assistant.conversation.recall, self.assistant.fleet.run))
         logger.info("GPT-Live session started (call=%s session=%s voice=%s prompt=%s)",
                     self.call_id, self.session_id, self.cfg.voice, self.prompt_sha256[:12])
 
@@ -213,6 +230,8 @@ class LiveVoiceSession:
         self.loop.call_soon_threadsafe(self._barge_in)
 
     def _barge_in(self):
+        if self.assistant is not None:
+            self.assistant.conversation.interrupted()
         if self.is_live:
             self._last_user_audio_at = time.monotonic()
             if self.cfg.barge_in and self.buffer is not None:
@@ -253,6 +272,7 @@ class LiveVoiceSession:
         handlers = {
             "session.started": self._on_started,
             "session.input_transcript.delta": self._on_transcript,
+            "session.output_transcript.delta": self._on_output_transcript,
             "session.output_audio.delta": self._on_audio,
             "session.delegation.created": self._on_delegation,
             "session.usage.updated": self._on_usage,
@@ -288,6 +308,9 @@ class LiveVoiceSession:
         self._ready.set()
 
     def _on_transcript(self, event):
+        if self.assistant is not None:
+            if not self.assistant.conversation.transcript(event, "user"):
+                return
         text = event.get("delta", "")
         if not isinstance(text, str) or not text:
             return
@@ -299,6 +322,10 @@ class LiveVoiceSession:
             self._transcript_size -= len(self._transcripts.popleft()[1])
         self._last_transcript_at = time.monotonic()
         self._last_user_audio_at = self._last_transcript_at
+
+    def _on_output_transcript(self, event):
+        if self.assistant is not None:
+            self.assistant.conversation.transcript(event, "assistant")
 
     def _on_audio(self, event):
         if not self.is_live or self.buffer is None:
@@ -404,10 +431,10 @@ class LiveVoiceSession:
             while True:
                 did, content, final = await self._backend_updates.get()
                 if did is None:
-                    if self.cfg.summarize_for_voice:
+                    if self._needs_voice_summary(content):
                         from gateway.voice_summary import summarize_for_voice
                         content = await summarize_for_voice(content, preserve_style=True)
-                    await self._commentary(None, "Update on background work: " + content)
+                    await self._commentary(None, content if self.assistant is not None else "Update on background work: " + content)
                     continue
                 for chunk in commentary_chunks(content):
                     if did in self._backend_completed and not final:
@@ -432,6 +459,10 @@ class LiveVoiceSession:
                 await self._send(event)
             elif not await self._send(event, guard=guard):
                 return
+
+    def _needs_voice_summary(self, content):
+        return self.cfg.summarize_for_voice and (
+            self.assistant is None or len(content) > 800 or "```" in content)
 
     async def _delegation_worker(self):
         active = set()
@@ -481,7 +512,7 @@ class LiveVoiceSession:
         try:
             await self._dispatch(text)
             result = await asyncio.wait_for(asyncio.shield(pending.future), self.cfg.reply_timeout_seconds)
-            if self.cfg.summarize_for_voice:
+            if self._needs_voice_summary(result):
                 from gateway.voice_summary import summarize_for_voice
                 result = await summarize_for_voice(result, preserve_style=True)
             self._awaiting_audio = created_at
@@ -568,6 +599,11 @@ class LiveVoiceSession:
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+                if self.assistant is not None:
+                    try:
+                        await self.assistant.conversation.close()
+                    except Exception as exc:
+                        logger.warning("Voice history close failed (%s)", type(exc).__name__)
                 if self.mixer is not None:
                     self.mixer.detach_live()
                 await asyncio.to_thread(self._write_usage, reason)

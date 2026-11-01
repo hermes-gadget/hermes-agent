@@ -4819,6 +4819,10 @@ class BasePlatformAdapter(ABC):
         (default); validated via ``_get_platform_tools`` (webhook adapter pins per-route)."""
         return None
 
+    def additional_toolsets_for_source(self, source: "SessionSource") -> List[str]:
+        """Stable platform capabilities added to configured tools; validated by the normal resolver."""
+        return []
+
     def format_message(self, content: str) -> str:
         """Format a message for this platform (override for e.g. Telegram
         MarkdownV2); default returns content as-is."""

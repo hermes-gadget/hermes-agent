@@ -330,6 +330,11 @@ class AgentStatusFeed:
             return
         changed = snapshot != self.spoken_snapshot
         active = [r for r in snapshot['agents'] if r['state'] in ACTIVE_STATES]
+        if getattr(self.session.cfg, 'assistant_enabled', False):
+            # The assistant speaks meaningful outcomes through the completion path. Tool rosters
+            # remain quiet factual context; periodic worker-count narration competes with the user.
+            self.spoken_snapshot = snapshot
+            return
         if not active:
             self.last_spoken = None  # Confirmed final reports already have their own spoken route.
             self.spoken_snapshot = snapshot

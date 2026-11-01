@@ -1,5 +1,8 @@
 # Matrix live voice
 
+For the personal assistant role, cross-channel project dispatch, fleet status and
+conversation continuity, see [Live assistant integration](../live_voice/README.md).
+
 Incoming MatrixRTC audio calls enter the same Hermes agent, Matrix conversation,
 permissions, tools and memory as text messages. The voice frontend uses
 `gpt-live-1` and Gleam. User transcripts are not echoed to the message thread;

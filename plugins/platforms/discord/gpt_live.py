@@ -15,6 +15,7 @@ DEFAULT_INSTRUCTIONS = (
 
 @dataclass(frozen=True)
 class GptLiveConfig(LiveVoiceConfig):
+    assistant_role: str = "project"
     voice_channel_id: str = ""
     text_channel_id: str = ""
     instructions: str = DEFAULT_INSTRUCTIONS
@@ -57,6 +58,8 @@ def load_gpt_live_config(raw: dict | None = None) -> GptLiveConfig:
                 raise ValueError(f"invalid {field.name}")
             values[field.name] = value
         cfg = GptLiveConfig(**values)
+        if cfg.assistant_role not in {"personal", "project"}:
+            raise ValueError("assistant_role must be personal or project")
         endpoint = urlparse(cfg.ws_url)
         if endpoint.scheme not in ("ws", "wss") or not endpoint.hostname or endpoint.query:
             raise ValueError("invalid ws_url")

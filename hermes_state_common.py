@@ -354,6 +354,37 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS voice_calls (
+    call_id TEXT PRIMARY KEY,
+    conversation_key TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+    started_at REAL NOT NULL,
+    closed_at REAL,
+    selected_project TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_voice_calls_owner ON voice_calls(conversation_key,user_id,session_id,started_at);
+CREATE TABLE IF NOT EXISTS voice_segments (
+    call_id TEXT NOT NULL REFERENCES voice_calls(call_id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL,
+    speaker TEXT NOT NULL,
+    text TEXT NOT NULL,
+    start_ms REAL,
+    end_ms REAL,
+    interrupted INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(call_id,event_id)
+);
+CREATE TABLE IF NOT EXISTS voice_dispatches (
+    request_id TEXT PRIMARY KEY,
+    owner_key TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_voice_dispatches_owner ON voice_dispatches(owner_key,updated_at);
+
 CREATE TABLE IF NOT EXISTS system_prompts (
     hash TEXT PRIMARY KEY,
     prompt TEXT NOT NULL
