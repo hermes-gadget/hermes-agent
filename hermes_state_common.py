@@ -384,6 +384,20 @@ CREATE TABLE IF NOT EXISTS voice_dispatches (
     updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_voice_dispatches_owner ON voice_dispatches(owner_key,updated_at);
+CREATE TABLE IF NOT EXISTS voice_assistant_records (
+    kind TEXT NOT NULL,
+    id TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    conversation_key TEXT NOT NULL DEFAULT '',
+    session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY(kind,id)
+);
+CREATE INDEX IF NOT EXISTS idx_voice_records_owner ON voice_assistant_records(owner_key,kind,updated_at);
 
 CREATE TABLE IF NOT EXISTS system_prompts (
     hash TEXT PRIMARY KEY,

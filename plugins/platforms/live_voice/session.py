@@ -232,6 +232,9 @@ class LiveVoiceSession:
     def _barge_in(self):
         if self.assistant is not None:
             self.assistant.conversation.interrupted()
+            if self.buffer is not None and self.buffer.active:
+                task = asyncio.create_task(self.assistant.interactions.interrupted())
+                self._tasks.append(task)
         if self.is_live:
             self._last_user_audio_at = time.monotonic()
             if self.cfg.barge_in and self.buffer is not None:
@@ -510,6 +513,11 @@ class LiveVoiceSession:
         self.pending[did] = pending  # Register BEFORE dispatch: fast replies cannot be lost.
         token = DELEGATION_CONTEXT.set((self, did))
         try:
+            if self.assistant is not None:
+                immediate = await self.assistant.interactions.intercept(text, did)
+                if immediate is not None:
+                    await self._commentary(did, immediate)
+                    return
             await self._dispatch(text)
             result = await asyncio.wait_for(asyncio.shield(pending.future), self.cfg.reply_timeout_seconds)
             if self._needs_voice_summary(result):

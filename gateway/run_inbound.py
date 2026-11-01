@@ -1033,6 +1033,8 @@ class GatewayInboundMixin:
         return self._hm_send_payload_as_turn(event, t("gateway.queue.usage"))
 
     async def _hm_cmd_steer(self, event, source, _quick_key):
+        from gateway.control_target import validate_execution
+        validate_execution(event, self)
         return self._hm_send_payload_as_turn(event, t("gateway.steer.usage_idle"))
 
     @staticmethod
@@ -1362,6 +1364,8 @@ class GatewayInboundMixin:
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
+        from gateway.control_target import validate_execution
+        validate_execution(event, self)
         if not is_internal:
             from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
             record_gateway_slash_command(event)
