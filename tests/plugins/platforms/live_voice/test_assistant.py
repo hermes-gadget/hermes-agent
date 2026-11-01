@@ -332,11 +332,12 @@ async def test_enabled_wire_session_seeds_history_and_records_actual_spoken_frag
 
 
 @pytest.mark.asyncio
-async def test_foreground_answer_survives_updates_and_executes_a_proposal_once(rig):
+@pytest.mark.parametrize("spoken_answer", ["yes", "Yes, do that!"])
+async def test_foreground_answer_survives_updates_and_executes_a_proposal_once(rig, spoken_answer):
     question = await rig.service.handle({"action": "prompt", "question": "Fix the parser?",
         "proposed_action": {"action": "dispatch", "project": "radio", "task": "Fix the parser"}}, "proposal")
     await rig.service.quiet("The unrelated docs worker finished.")
-    answer = await rig.service.interactions.intercept("yes", "answer")
+    answer = await rig.service.interactions.intercept(spoken_answer, "answer")
     assert '"status": "answered"' in answer
     assert (await rig.started.get()).text == "Fix the parser"
     repeated = await rig.service.handle({"action": "respond", "prompt_id": question["prompt_id"], "response": "yes"}, "again")
@@ -466,3 +467,328 @@ def test_recovery_audio_never_replays_a_truncated_request():
     audio.append(b"b")
     audio.append(b"c")
     assert audio.take() == (b"", True)
+
+
+def personal_delivery(rig):
+    from gateway.platforms.base import SendResult
+    source = rig.session.backend_source
+    rig.runner.session_store._entries["personal-key"] = SessionEntry("personal-key", "personal", datetime.now(), datetime.now(), origin=source)
+    origin = rig.session.adapter
+    origin.send = AsyncMock(return_value=SendResult(True, "$notice"))
+    rig.runner.adapters[Platform.MATRIX] = origin
+    return origin.send
+
+
+@pytest.mark.asyncio
+async def test_offcall_blocker_is_mirrored_once_and_resolved_muted_blockers_are_not_sent(rig):
+    from tools.clarify_gateway import register, clear_session, respond_to_id
+    from plugins.platforms.live_voice.observer import OwnerContext, OwnerObserver
+    send = personal_delivery(rig)
+    source, key, state = running_native_job(rig)
+    config = rig.service.config
+    config["voice"]["assistant"]["notifications"] = {"quiet_hours": False}
+    observer = OwnerObserver(OwnerContext(rig.runner, rig.home, config, rig.db))
+    entry = register("choice-one", key, "Which format?", ["JSON", "CSV"])
+    try:
+        rig.session._accepting_audio = False
+        await observer.tick()
+        await observer.tick()
+        assert send.await_count == 1 and "Which format?" in send.call_args.args[1]
+        respond_to_id(entry.clarify_id, key, "JSON")
+        clear_session(key)
+        entry = register("choice-two", key, "Which format next?", ["JSON", "CSV"])
+        config["voice"]["assistant"]["notifications"]["mode"] = "muted"
+        await observer.tick()
+        respond_to_id(entry.clarify_id, key, "CSV")
+        config["voice"]["assistant"]["notifications"]["mode"] = "watched"
+        await observer.tick()
+        assert send.await_count == 1
+        assert any(r["status"] == "resolved" for r in rig.db.voice_records("notice", observer.context.owner_key))
+    finally:
+        clear_session(key)
+
+
+@pytest.mark.asyncio
+async def test_voice_observer_binds_native_question_and_answers_without_queue_deadlock(rig):
+    import time
+    from tools.clarify_gateway import register, clear_session
+    from plugins.platforms.live_voice.observer import OwnerContext, OwnerObserver
+    source, key, state = running_native_job(rig)
+    rig.service.config["voice"]["assistant"]["notifications"] = {"quiet_hours": False}
+    observer = OwnerObserver(OwnerContext(rig.runner, rig.home, rig.service.config, rig.db))
+    observer.calls.add(rig.service)
+    rig.session._last_user_audio_at = time.monotonic() - 4
+    entry = register("spoken-choice", key, "Use JSON or CSV?", ["JSON", "CSV"])
+    try:
+        await observer.tick()
+        prompt = next(r for r in rig.service.interactions.cached if r["status"] == "foreground")
+        assert prompt["native"]["clarify_id"] == "spoken-choice"
+        answer = await rig.service.interactions.intercept("CSV", "voice-answer")
+        assert '"status": "answered"' in answer and entry.response == "CSV"
+        assert rig.started.empty()
+    finally:
+        clear_session(key)
+
+
+def test_notification_policy_honors_dst_quiet_hours_and_temporary_modes():
+    from plugins.platforms.live_voice.notifications import NotificationPolicy
+    def epoch(value):
+        return datetime.fromisoformat(value).timestamp()
+    policy = NotificationPolicy({})
+    assert policy.quiet(epoch("2026-07-01T21:30:00+00:00"))  # 22:30 British Summer Time.
+    assert not policy.quiet(epoch("2026-07-01T20:30:00+00:00"))
+    policy.settings["temporary"] = {"mode": "muted", "until": "2026-07-02T12:00:00+00:00"}
+    assert not policy.allows("input", epoch("2026-07-02T10:00:00+00:00"))
+    assert policy.allows("completion", epoch("2026-07-02T13:00:00+00:00"))
+    policy.settings["mode"] = "decisions"
+    assert not policy.allows("completion", epoch("2026-07-02T13:00:00+00:00"))
+
+
+@pytest.mark.asyncio
+async def test_notification_preferences_and_handoff_preserve_settings_and_delivery_identity(rig):
+    send = personal_delivery(rig)
+    before = json.loads((rig.home / "config.yaml").read_text())
+    await rig.service.handle({"action": "notifications", "mode": "decisions"}, "preferences")
+    from hermes_cli.config import read_user_config_raw
+    after = read_user_config_raw(rig.home / "config.yaml")
+    assert after["discord"] == before["discord"] and after["matrix"] == before["matrix"]
+    result = await rig.service.handle({"action": "handoff", "destination": "matrix", "task": "The requested details."}, "send")
+    assert result["status"] == "delivered" and result["delivery"]["url"].endswith("/$notice")
+    repeated = await rig.service.handle({"action": "handoff", "destination": "matrix", "task": "The requested details.",
+                                       "request_id": result["request_id"]}, "retry")
+    assert repeated == result and send.await_count == 1
+    with pytest.raises(ValueError, match="verified project result"):
+        await rig.service.handle({"action": "handoff", "destination": "matrix", "artifact_id": "invented"}, "bad")
+
+
+@pytest.mark.asyncio
+async def test_observer_registration_is_shared_and_disconnect_drains_it(rig):
+    from plugins.platforms.live_voice.observer import start_observer, stop_observer
+    raw = rig.service.config
+    raw["matrix"]["gpt_live"]["assistant_enabled"] = True
+    (rig.home / "config.yaml").write_text(json.dumps(raw))
+    try:
+        first, second = await asyncio.gather(start_observer(rig.target), start_observer(rig.target))
+        assert first is second and len(rig.runner._live_voice_observers) == 1
+        assert len(first.adapters) == 1 and not first.task.done()
+    finally:
+        await stop_observer(rig.target)
+    assert first.task.done() and not rig.runner._live_voice_observers
+
+
+@pytest.mark.asyncio
+async def test_native_artifact_is_frozen_and_handed_off_by_verified_id(rig):
+    from gateway.platforms.base import SendResult
+    personal_delivery(rig)
+    rig.session.adapter.send_document = AsyncMock(return_value=SendResult(True, "$file"))
+    rig.target.send_document = AsyncMock(return_value=SendResult(True, "project-file"))
+    original = rig.home / "changes.diff"
+    original.write_text("-old\n+new\n")
+    async def project(event):
+        return f"The verified diff is attached.\nMEDIA:{original}"
+    rig.target.set_message_handler(project)
+    receipt = await rig.service.handle({"action": "dispatch", "project": "radio", "task": "Produce the diff"}, "diff")
+    await asyncio.gather(*list(rig.target._session_tasks.values()))
+    await asyncio.gather(*list(rig.service._result_tasks))
+    artifacts = rig.db.voice_records("artifact", rig.service.owner_key)
+    assert len(artifacts) == 1 and artifacts[0]["payload"]["reference"] == receipt["request_id"]
+    original.write_text("different content after generation")
+    result = await rig.service.handle({"action": "handoff", "artifact_id": artifacts[0]["id"], "destination": "matrix"}, "copy-diff")
+    assert result["status"] == "delivered"
+    delivered = __import__("pathlib").Path(rig.session.adapter.send_document.call_args.args[1])
+    assert delivered.read_text() == "-old\n+new\n"
+    assert not rig.db.voice_records("artifact", "other-owner")
+
+
+@pytest.mark.asyncio
+async def test_requested_artifact_production_and_delivery_finish_after_hangup(rig):
+    from gateway.platforms.base import SendResult
+    from plugins.platforms.live_voice.fulfillment import complete_handoffs
+    personal_delivery(rig)
+    rig.session.adapter.send_document = AsyncMock(return_value=SendResult(True, "$requested-file"))
+    rig.target.send_document = AsyncMock(return_value=SendResult(True, "project-file"))
+    first = await rig.service.handle({"action": "dispatch", "project": "radio", "task": "Fix parser"}, "first")
+    await rig.started.get()
+    rig.release.set()
+    await asyncio.gather(*list(rig.target._session_tasks.values()))
+    await asyncio.gather(*list(rig.service._result_tasks))
+    produce = asyncio.Event()
+    async def project(event):
+        await produce.wait()
+        artifact = rig.home / "requested.diff"
+        artifact.write_text("-before\n+after\n")
+        return f"The requested diff is ready.\nMEDIA:{artifact}"
+    rig.target.set_message_handler(project)
+    request = await rig.service.handle({"action": "handoff", "produce": True, "artifact_id": first["request_id"],
+        "destination": "matrix", "task": "Produce a diff of the parser changes"}, "produce")
+    assert request["status"] == "awaiting_artifact" and "MEDIA:" in rig.channel.sent[-1]
+    rig.session._accepting_audio = False
+    produce.set()
+    await asyncio.gather(*list(rig.target._session_tasks.values()))
+    await asyncio.gather(*list(rig.service._result_tasks))
+    await complete_handoffs(rig.service, request["followup"]["request_id"])
+    record = rig.db.voice_record("delivery", request["request_id"], rig.service.owner_key)
+    assert record["status"] == "delivered" and rig.session.adapter.send_document.await_count == 1
+    await complete_handoffs(rig.service, request["followup"]["request_id"])
+    assert rig.session.adapter.send_document.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_attached_owned_child_uses_native_control_and_verified_completion(rig):
+    import weakref
+    from tools.delegate_tool import _register_subagent, _unregister_subagent
+    from plugins.platforms.live_voice.observer import OwnerContext, OwnerObserver
+    source, key, state = running_native_job(rig)
+    class Parent:
+        session_id = "coding"
+        cwd = "/radio"
+        def get_activity_summary(self):
+            return {}
+    class Child:
+        session_id = "child-session"
+        def __init__(self, parent):
+            self._delegate_parent_ref = weakref.ref(parent)
+            self.steered = []
+        def steer(self, text):
+            self.steered.append(text)
+            return True
+    parent = state.turn.agent = Parent()
+    child = Child(parent)
+    _register_subagent({"subagent_id": "test-owned-child", "agent": child, "goal": "Check radio packets",
+        "owner_agent_session_id": "coding", "status": "running"})
+    try:
+        attached = await rig.service.handle({"action": "attach", "agent_id": "native:test-owned-child"}, "attach-child")
+        await rig.service.handle({"action": "steer", "attachment_id": attached["attachment_id"], "task": "Use fixture B"}, "steer-child")
+        assert child.steered == ["Use fixture B"] and rig.started.empty()
+        observer = OwnerObserver(OwnerContext(rig.runner, rig.home, rig.service.config, rig.db))
+        await observer.record_child_result(str(rig.home), "child-session", "Packet checks passed", "completed")
+        await observer.record_child_result(str(rig.home), "child-session", "Packet checks passed", "completed")
+        assert rig.db.voice_record("attachment", attached["attachment_id"], rig.service.owner_key)["status"] == "reported"
+        assert len(rig.db.voice_records("notice", rig.service.owner_key)) == 1
+    finally:
+        _unregister_subagent("test-owned-child", agent=child)
+
+
+@pytest.mark.asyncio
+async def test_notification_write_scope_alternates_a_b_a_without_touching_b(rig, monkeypatch):
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from plugins.platforms.live_voice.assistant_tools import handle
+    other = rig.home / "other-profile"
+    other.mkdir()
+    (other / "config.yaml").write_text('{"owner":"B"}')
+    before = (other / "config.yaml").read_bytes()
+    token = DELEGATION_CONTEXT.set((rig.session, "preferences"))
+    scope = set_session_vars(session_key="personal-key")
+    try:
+        assert "configured" in await asyncio.to_thread(handle, {"action": "notifications", "mode": "decisions"})
+        monkeypatch.setenv("HERMES_HOME", str(other))
+        denied = await asyncio.to_thread(handle, {"action": "notifications", "mode": "muted"})
+        assert "originating voice coordinator" in denied and (other / "config.yaml").read_bytes() == before
+        monkeypatch.setenv("HERMES_HOME", str(rig.home))
+        assert "configured" in await asyncio.to_thread(handle, {"action": "notifications", "mode": "watched"})
+    finally:
+        clear_session_vars(scope)
+        DELEGATION_CONTEXT.reset(token)
+
+
+def test_local_evaluation_deduplicates_usage_and_rejects_wrong_target_successes():
+    from plugins.platforms.live_voice.evaluation import build_report
+    observed = [{"scenario": "native_takeover", "platform": "discord", "success": True,
+                 "wrong_target": True, "response_latency_ms": 300}]
+    usage = [
+        {"session_id": "one", "logical_session_id": "call", "seconds": 3, "backend_handoff_to_audio_ms": [100]},
+        {"session_id": "one", "logical_session_id": "call", "seconds": 5, "usage_confirmed": True,
+         "backend_handoff_to_audio_ms": [100]},
+        {"session_id": "two", "logical_session_id": "call", "seconds": 7, "usage_confirmed": True,
+         "backend_handoff_to_audio_ms": [100, 200]},
+    ]
+    report = build_report(observed, usage)
+    assert not report["passed"] and report["critical_failures"] == 1
+    assert report["frontend_seconds"] == 12 and report["unconfirmed_usage_sessions"] == 0
+    assert report["wire_backend_handoff_to_audio_ms"]["count"] == 2
+    observed[0]["wrong_target"] = False
+    assert build_report(observed, usage)["passed"]
+    assert not build_report(observed, usage, require_complete=True)["passed"]
+
+
+def test_playback_metrics_distinguish_played_and_discarded_audio():
+    from plugins.platforms.live_voice.playback import LivePlaybackBuffer
+    buffer = LivePlaybackBuffer(prime_ms=0)
+    buffer.feed(b"a" * 1920)
+    assert len(buffer.read_frame()) == 960
+    buffer.flush()
+    assert buffer.read_frame() is None
+    metrics = buffer.snapshot()
+    assert metrics["played_frames"] == 1 and metrics["played_bytes"] == 960
+    assert metrics["discarded_bytes"] == 960 and metrics["buffered_bytes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_project_role_redacts_persisted_personal_results_and_files(rig):
+    personal_delivery(rig)
+    source = rig.session.backend_source
+    key = rig.runner._session_key_for_source(source)
+    rig.runner.session_store._entries[key] = SessionEntry(key, "personal", datetime.now(), datetime.now(), origin=source)
+    state = rig.runner._sessions[key] = SessionState()
+    state.turn.agent = SimpleNamespace(get_activity_summary=lambda: {"description": "Reading private calendar"})
+    state.turn.event = SimpleNamespace(source=source, text="Private appointment details", metadata={})
+    state.persistent.run_generation = 5
+    attached = await rig.service.handle({"action": "attach", "agent_id": "gateway:" + key}, "personal-attach")
+    record = rig.db.voice_record("attachment", attached["attachment_id"], rig.service.owner_key)
+    rig.db.voice_change_record("attachment", record["id"], rig.service.owner_key, {"watching"}, "reported",
+        {**record["payload"], "result": "Private appointment details"})
+    rig.db.voice_create_record("artifact", "private-file", rig.service.owner_key,
+        {"filename": "private-calendar.txt", "reference": record["id"], "source_url": "matrix-link", "platform": "matrix"})
+    rig.session.cfg = replace(rig.session.cfg, assistant_role="project")
+    snapshot = await rig.service.handle({"action": "agents"}, "status")
+    assert "Private appointment" not in json.dumps(snapshot) and "private-calendar" not in json.dumps(snapshot)
+    assert snapshot["attachments"][0]["project"] == "Personal assistant"
+    with pytest.raises(ValueError, match="personal Matrix"):
+        await rig.service.handle({"action": "handoff", "artifact_id": "private-file", "destination": "current"}, "copy-private")
+
+
+@pytest.mark.asyncio
+async def test_hangup_cancels_transport_recovery_without_another_connection(rig, monkeypatch):
+    import websockets
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-local-key")
+    session = rig.session
+    session._send = LiveVoiceSession._send.__get__(session)
+    session.RECOVERY_DELAYS = (10,)
+    drop = asyncio.Event()
+    connections = []
+    async def server(ws):
+        await ws.recv()
+        connections.append(ws)
+        await ws.send(json.dumps({"type": "session.started", "session": {"id": "before-hangup"}}))
+        await drop.wait()
+        await ws.close(code=1011)
+    async with websockets.serve(server, "127.0.0.1", 0) as local:
+        session.cfg = replace(session.cfg, ws_url=f"ws://127.0.0.1:{local.sockets[0].getsockname()[1]}")
+        session.mixer = SimpleNamespace(attach_live=lambda **kw: SimpleNamespace(flush=lambda: None, active=False), detach_live=lambda: None)
+        await session.start()
+        drop.set()
+        async with asyncio.timeout(5):
+            while not session._recovering:
+                await asyncio.sleep(0)
+        session.close_requested = True
+        await session.close("user_left")
+        assert session._recovery_task.done() and len(connections) == 1
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_watched_completions_are_grouped_without_replacing_question(rig):
+    import time
+    from plugins.platforms.live_voice.observer import OwnerContext, OwnerObserver
+    rig.service.config["voice"]["assistant"]["notifications"] = {"quiet_hours": False}
+    observer = OwnerObserver(OwnerContext(rig.runner, rig.home, rig.service.config, rig.db))
+    observer.calls.add(rig.service)
+    rig.session._last_user_audio_at = time.monotonic() - 4
+    question = await rig.service.handle({"action": "prompt", "question": "Which project next?", "choices": ["Radio", "Web"]}, "question")
+    rig.session._commentary = AsyncMock()
+    for ident, project in [("one", "Radio"), ("two", "Web")]:
+        await observer.project_result(ident, {"project": project, "result": "Verified checks passed", "monitor_url": "https://discord.com/channels/7/33"})
+    await observer.tick()
+    assert rig.session._commentary.await_count == 1
+    assert "Radio" in rig.session._commentary.call_args.args[1] and "Web" in rig.session._commentary.call_args.args[1]
+    assert all(r["status"] == "delivered" for r in rig.db.voice_records("notice", rig.service.owner_key))
+    assert next(r for r in await rig.service.interactions.snapshot() if r["status"] == "foreground")["prompt_id"] == question["prompt_id"]

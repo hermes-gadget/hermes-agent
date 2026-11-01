@@ -1394,6 +1394,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        event._execution_generation = _run_generation
 
         try:
             # Fail-open plugin consume inside the claimed slot (#129958); once per message.

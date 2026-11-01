@@ -1,8 +1,16 @@
 """Durable foreground questions, separate from asynchronous job commentary."""
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import hashlib
 import json
+import re
+
+AFFIRMATIVE = {"yes", "yes please", "yes do that", "yes do it", "do it", "do that", "go ahead", "proceed", "okay", "ok"}
+NEGATIVE = {"no", "no thanks", "cancel", "don't", "do not"}
+
+
+def normalized_answer(value):
+    return " ".join(re.sub(r"[^\w\s']", " ", value.casefold()).split())
 
 
 @dataclass(frozen=True)
@@ -12,6 +20,8 @@ class PendingVoiceInteraction:
     question: str
     choices: list
     needs_restate: bool = False
+    proposed_action: dict | None = None
+    native: dict | None = None
 
 
 class InteractionManager:
@@ -27,8 +37,11 @@ class InteractionManager:
         return await asyncio.to_thread(a.db.voice_records, "interaction", a.owner_key, scope=scope, session_id=lineage)
 
     async def snapshot(self):
-        self.cached = [{"prompt_id": r["id"], "status": r["status"], **r["payload"]}
-                for r in await self.records() if r["status"] in {"foreground", "queued"}]
+        self.cached = [asdict(PendingVoiceInteraction(prompt_id=r["id"], status=r["status"],
+            question=r["payload"]["question"], choices=r["payload"]["choices"],
+            needs_restate=r["payload"].get("needs_restate", False),
+            proposed_action=r["payload"].get("proposed_action"), native=r["payload"].get("native")))
+            for r in await self.records() if r["status"] in {"foreground", "queued"}]
         return self.cached
 
     async def intercept(self, text, did):
@@ -36,7 +49,7 @@ class InteractionManager:
         if len(foreground) != 1:
             return None
         prompt = foreground[0]
-        simple = text.casefold().strip(".! ") in {"yes", "yes please", "no", "no thanks", "do that", "go ahead", "proceed", "cancel"}
+        simple = normalized_answer(text) in AFFIRMATIVE | NEGATIVE
         choice = text.isdigit() or any(c.casefold() == text.casefold() for c in prompt["choices"])
         if not (simple or choice or prompt.get("native") and not prompt["choices"]):
             return None
@@ -67,6 +80,8 @@ class InteractionManager:
             if action is not None and (not isinstance(action, dict) or action.get("action") not in {
                     "dispatch", "continue", "steer", "stop", "select", "handoff", "notifications"}):
                 raise ValueError("The proposed action must use an existing assistant operation.")
+            if action and any(normalized_answer(c) not in AFFIRMATIVE | NEGATIVE for c in choices):
+                raise ValueError("Use yes/no choices for an executable proposal; ask other choices as a separate question.")
             scope, lineage = await asyncio.to_thread(a.conversation.identity)
             ident = hashlib.sha256(f"{a.owner_key}:{scope}:{lineage}:{did}".encode()).hexdigest()
             payload = {"question": question, "choices": choices, "proposed_action": action,
@@ -111,8 +126,8 @@ class InteractionManager:
             if not answer:
                 raise ValueError("Choose one of the recorded choices.")
         action = data.get("proposed_action")
-        affirmative = answer.casefold().strip(".! ") in {"yes", "yes please", "do that", "go ahead", "proceed"}
-        negative = answer.casefold().strip(".! ") in {"no", "no thanks", "cancel", "don't"}
+        affirmative = normalized_answer(answer) in AFFIRMATIVE
+        negative = normalized_answer(answer) in NEGATIVE
         if action and not affirmative and not negative:
             raise ValueError("Confirm or decline the recorded action explicitly.")
         claimed = await asyncio.to_thread(a.db.voice_change_record, "interaction", row["id"], a.owner_key,

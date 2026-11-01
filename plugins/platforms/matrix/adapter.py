@@ -1355,10 +1355,12 @@ class MatrixAdapter(MatrixLiveMixin, BasePlatformAdapter):
         self._mark_connected()
         self._wire_plugin_handlers(self._client)  # plugin-registered native handlers
         await self._connect_matrix_live()
+        await self.start_live_assistant_observer()
         return True
 
     async def disconnect(self) -> None:
         await self._disconnect_matrix_live()
+        await self.stop_live_assistant_observer()
         self._closing = True
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
@@ -2488,6 +2490,7 @@ class MatrixAdapter(MatrixLiveMixin, BasePlatformAdapter):
                 self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        await super().on_processing_complete(event, outcome)
         msg_id, room_id = event.message_id, event.source.chat_id
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
             return
@@ -3277,6 +3280,8 @@ def register(ctx) -> None:
     from plugins.platforms.live_voice.coordination import enforce_voice_coordination
     ctx.register_hook('pre_tool_call', observe_agent_tool)
     ctx.register_hook('pre_tool_call', enforce_voice_coordination)
+    from plugins.platforms.live_voice.observer import observe_native_child
+    ctx.register_hook('subagent_stop', observe_native_child)
     ctx.register_hook('subagent_start', observe_agent_lifecycle)
     ctx.register_hook('subagent_stop', observe_agent_lifecycle)
     ctx.register_platform(
