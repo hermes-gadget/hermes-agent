@@ -17,6 +17,8 @@ class LivePlaybackBuffer:
         self._primed = False
         self.generation = 0
         self._first_feed_at = None
+        self._played_frames = self._played_bytes = self._discarded_bytes = 0
+        self._last_played_at = None
 
     def feed(self, pcm: bytes) -> None:
         with self._lock:
@@ -27,7 +29,9 @@ class LivePlaybackBuffer:
             self._pcm.extend(pcm)
             overflow = len(self._pcm) - self._limit
             if overflow > 0:
-                del self._pcm[:(overflow + self._alignment - 1) // self._alignment * self._alignment]
+                discarded = (overflow + self._alignment - 1) // self._alignment * self._alignment
+                del self._pcm[:discarded]
+                self._discarded_bytes += discarded
 
     def read_frame(self) -> bytes | None:
         with self._lock:
@@ -42,13 +46,26 @@ class LivePlaybackBuffer:
                 frame = bytes(self._pcm) if self._pcm else None
                 self._pcm.clear()
                 self._primed = False
-                return frame.ljust(self._frame_bytes, b"\x00") if frame else None
+                return self._played(frame.ljust(self._frame_bytes, b"\x00")) if frame else None
             frame = bytes(self._pcm[:self._frame_bytes])
             del self._pcm[:self._frame_bytes]
-            return frame
+            return self._played(frame)
+
+    def _played(self, frame):
+        self._played_frames += 1
+        self._played_bytes += len(frame)
+        self._last_played_at = time.monotonic()
+        return frame
+
+    def snapshot(self):
+        with self._lock:
+            return {"played_frames": self._played_frames, "played_bytes": self._played_bytes,
+                    "discarded_bytes": self._discarded_bytes, "buffered_bytes": len(self._pcm),
+                    "last_played_at": self._last_played_at, "flushes": self.generation}
 
     def flush(self) -> None:
         with self._lock:
+            self._discarded_bytes += len(self._pcm)
             self._pcm.clear()
             self._primed = False
             self.generation += 1

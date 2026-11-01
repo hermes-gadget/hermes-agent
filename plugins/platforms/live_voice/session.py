@@ -183,6 +183,11 @@ class LiveVoiceSession(LiveRecoveryMixin):
         self._accepting_audio = True
         if self.assistant is not None:
             await self.assistant.conversation.started()
+            start_observer = getattr(self.adapter, "start_live_assistant_observer", None)
+            if callable(start_observer):
+                self.assistant.observer = await start_observer()
+                if self.assistant.observer is not None:
+                    self.assistant.observer.calls.add(self.assistant)
         self._tasks = [asyncio.create_task(worker()) for worker in (
             self._send_audio_worker, self._send_quiet_acks, self._delegation_worker, self._send_backend_updates,
             self.agent_status.run, self._watchdog,
@@ -566,11 +571,15 @@ class LiveVoiceSession(LiveRecoveryMixin):
         self._usage_logged = True
         record = {
             "ts": datetime.now(timezone.utc).isoformat(), "call_id": self.call_id,
+            "logical_session_id": self.logical_session_id,
             **self._usage_context, "session_id": self.session_id,
             "seconds": self.usage_seconds, "estimated_voice_usd": round(self.usage_seconds / 60 * 0.05, 4),
             "model": self.cfg.model, "reason": reason, "usage_confirmed": self.finalized.is_set(),
             "prompt_sha256": self.prompt_sha256,
             "first_audio_ms_p50": statistics.median(self.first_audio_ms) if self.first_audio_ms else None,
+            # This is backend handoff -> generated audio, not end of audible caller speech.
+            "backend_handoff_to_audio_ms": self.first_audio_ms,
+            "playback": self.buffer.snapshot() if callable(getattr(self.buffer, "snapshot", None)) else None,
             "delegations": self.delegations, "dropped_frames": self.dropped_frames,
             "input_frames": self.input_frames, "sent_audio_frames": self.sent_audio_frames,
             "output_audio_bytes": self.output_audio_bytes,

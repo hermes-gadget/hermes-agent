@@ -30,6 +30,14 @@ class BackgroundReply:
 
 
 class LiveBackendMixin:
+    async def start_live_assistant_observer(self):
+        from .observer import start_observer
+        return await start_observer(self)
+
+    async def stop_live_assistant_observer(self):
+        from .observer import stop_observer
+        await stop_observer(self)
+
     def additional_toolsets_for_source(self, source):
         from .assistant_tools import register_tools
         extra = super().additional_toolsets_for_source(source)
@@ -156,6 +164,28 @@ class LiveBackendMixin:
 
     async def on_processing_complete(self, event, outcome):
         self._gpt_live_complete_stream(event)
+        from .projects import PROJECT_CONTEXT
+        project = PROJECT_CONTEXT.get()
+        if project and project[2] == str(event.source.chat_id):
+            service, request_id, _ = project
+            if service.db is not None:
+                from gateway.run import _profile_runtime_scope
+                from .artifacts import capture_artifacts
+                from .fulfillment import complete_handoffs
+                with _profile_runtime_scope(service.home):
+                    receipts = await asyncio.to_thread(service.db.voice_dispatches, service.owner_key, 100)
+                    receipt = next((r for r in receipts if r["request_id"] == request_id), None)
+                    if receipt is not None:
+                        await capture_artifacts(service, self, event, request_id, receipt["payload"]["monitor_url"])
+                        await complete_handoffs(service, request_id)
+        from gateway.run import _profile_runtime_scope
+        runner = getattr(self, "gateway_runner", None)
+        for observer in list(getattr(runner, "_live_voice_observers", {}).values()):
+            try:
+                with _profile_runtime_scope(observer.context.home):
+                    await observer.record_result(self, event, outcome)
+            except Exception as exc:
+                logger.warning("Voice result observation failed (%s)", type(exc).__name__)
         context = getattr(event, "_gpt_live_delegation", None)
         if context and getattr(context[0], "assistant", None) is not None and context[0].is_live:
             session = context[0]

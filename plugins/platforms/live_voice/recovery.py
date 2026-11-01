@@ -67,6 +67,7 @@ class LiveRecoveryMixin:
         key = get_scoped_secret("OPENAI_API_KEY") or get_scoped_secret("VOICE_TOOLS_OPENAI_KEY")
         if not key:
             from .session import GptLiveUnavailable
+            self._start_error = "OpenAI project API key is missing"
             raise GptLiveUnavailable("OpenAI project API key is missing")
         self._connection_generation += 1
         generation = self._connection_generation

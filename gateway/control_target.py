@@ -22,7 +22,7 @@ class ExecutionTarget:
 
 
 def validate_execution(event, runner):
-    target = event._execution_target
+    target = getattr(event, "_execution_target", None)
     if target is not None:
         if not isinstance(target, ExecutionTarget):
             raise ValueError("Invalid execution control target.")

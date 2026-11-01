@@ -1439,6 +1439,7 @@ class DiscordAdapter(DiscordGptLiveMixin, DiscordMediaMixin, BasePlatformAdapter
                     adapter_self._ensure_missed_message_backfill_task()
                 if adapter_self._gpt_live_cfg.enabled:
                     adapter_self._gpt_live_spawn(adapter_self._reconcile_gpt_live())
+                adapter_self._gpt_live_spawn(adapter_self.start_live_assistant_observer())
 
             @self._client.event
             async def on_socket_event_type(event_type: str):
@@ -2064,6 +2065,7 @@ class DiscordAdapter(DiscordGptLiveMixin, DiscordMediaMixin, BasePlatformAdapter
         # Cancel the liveness probe first so it can't fire a spurious fatal/reconnect mid-teardown.
         await self._cancel_liveness_task()
         await self._shutdown_gpt_live()
+        await self.stop_live_assistant_observer()
         # Leave voice *before* cancelling the bot task: VoiceClient.disconnect() needs the main
         # gateway WS (run by the bot task) or it blocks until the timeout.
         for guild_id in list(self._voice_clients.keys()):
@@ -3095,7 +3097,7 @@ class DiscordAdapter(DiscordGptLiveMixin, DiscordMediaMixin, BasePlatformAdapter
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for final reaction and durable state."""
-        self._gpt_live_complete_stream(event)
+        await super().on_processing_complete(event, outcome)
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
         if not self._reactions_enabled():
             return
@@ -7595,6 +7597,8 @@ def register(ctx) -> None:
     from plugins.platforms.live_voice.coordination import enforce_voice_coordination
     ctx.register_hook('pre_tool_call', observe_agent_tool)
     ctx.register_hook('pre_tool_call', enforce_voice_coordination)
+    from plugins.platforms.live_voice.observer import observe_native_child
+    ctx.register_hook('subagent_stop', observe_native_child)
     ctx.register_hook('subagent_start', observe_agent_lifecycle)
     ctx.register_hook('subagent_stop', observe_agent_lifecycle)
     ctx.register_platform(

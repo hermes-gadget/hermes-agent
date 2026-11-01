@@ -4594,6 +4594,7 @@ class BasePlatformAdapter(ABC):
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
             await self._release_turn_marker(event)
+            event._completed_response = str(response or getattr(event, "_streamed_final_response", "") or "")
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

@@ -5,6 +5,11 @@ import time
 
 
 class SessionVoiceMixin:
+    def voice_record(self, kind, ident, owner_key):
+        row = self._read_one("SELECT * FROM voice_assistant_records WHERE kind=? AND id=? AND owner_key=?",
+                             (kind, ident, owner_key))
+        return {**dict(row), "payload": json.loads(row["payload"])} if row else None
+
     def voice_create_record(self, kind, ident, owner_key, payload, *, scope="", session_id="", status="pending"):
         fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
         def create(conn):

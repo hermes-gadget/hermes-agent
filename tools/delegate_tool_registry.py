@@ -244,6 +244,7 @@ def _list_payload(parent_agent: Any) -> Dict[str, Any]:
         started = r.get("started_at")
         entry = {
             "subagent_id": r.get("subagent_id"),
+            "child_session_id": str(getattr(r.get("agent"), "session_id", "") or ""),
             "parent_id": r.get("parent_id"),
             "goal": r.get("goal"),
             "model": r.get("model"),

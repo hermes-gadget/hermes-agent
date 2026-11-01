@@ -33,6 +33,7 @@ class AgentStatus:
     needs_input: bool = False
     freshness: str = "current"
     activity_at: float | None = None
+    controls: tuple = ()
 
 
 @dataclass
@@ -56,6 +57,8 @@ class FleetStatusProvider:
 
     async def snapshot(self):
         service, now = self.assistant, time.time()
+        if getattr(service, "observer", None) is not None:
+            return await service.observer.snapshot_for(service)
         service.authorize()
         runner = service.runner
         store = getattr(runner, "session_store", None)
@@ -82,12 +85,16 @@ class FleetStatusProvider:
             from tools.clarify_gateway import get_pending_for_session
             pending = pending or get_pending_for_session(key, include_choice_prompts=True)
             status = "waiting_for_input" if pending else "running" if agent is not None else "queued" if queue else "idle"
+            if status == "running" and not callable(getattr(agent, "get_activity_summary", None)):
+                status = "starting"
             ident = f"gateway:{key}"
             row = AgentStatus(ident, None, _label(source.chat_name or source.chat_id), source.profile or "default",
                 str(sid), platform, str(source.chat_id), _label(getattr(agent, "cwd", ""), 240),
                 _label(getattr(event, "text", "")), status, _label(activity), now, "gateway",
                 discord_link(source.guild_id, source.chat_id) if platform == "discord" and source.guild_id else "",
                 needs_input=bool(pending), activity_at=summary.get("last_activity_at"))
+            if agent is not None:
+                row.controls = ("attach", "steer", "stop", "respond")
             cached = getattr(runner, "_agent_cache", {}).get(key)
             parent = agent if callable(getattr(agent, "get_activity_summary", None)) else (
                 cached[0] if isinstance(cached, tuple) else None)
@@ -103,6 +110,7 @@ class FleetStatusProvider:
                     row.last_result = _label(messages[0].get("content"), 400)
             if service.session.cfg.assistant_role == "project" and platform == "matrix":
                 row.project, row.objective, row.activity, row.workspace, row.last_result = "Personal assistant", "", "", "", ""
+                row.controls = ()
             rows.append(row)
             if parent is not None:
                 roots.append((parent, row))
@@ -118,8 +126,10 @@ class FleetStatusProvider:
                     parent.project, parent.profile, "", parent.platform, parent.channel_id, "",
                     _label(child.get("goal")), "running", _label(child.get("current_tool") or child.get("last_tool")),
                     now, "native_worker", parent.monitor_url)
+                child_row.controls = ("attach", "steer", "stop")
                 if service.session.cfg.assistant_role == "project" and parent.platform == "matrix":
                     child_row.objective = child_row.activity = ""
+                    child_row.controls = ()
                 rows.append(child_row)
         coverage = {"gateway": "current", "native_workers": "current", "operations_feed": "not_configured"}
         url = (service.config.get("voice", {}).get("assistant") or {}).get("fleet_url", "")
@@ -216,7 +226,8 @@ class FleetStatusProvider:
                     previous = serialized
                 waiting = {r["agent_id"] for r in snapshot["agents"] if r["needs_input"]}
                 new_waiting = [r for r in snapshot["agents"] if r["agent_id"] in waiting - announced]
-                if new_waiting and self.assistant.session.loop.time() - self.assistant.session._last_transcript_at >= 3:
+                if (new_waiting and getattr(self.assistant, "observer", None) is None
+                        and self.assistant.session.loop.time() - self.assistant.session._last_transcript_at >= 3):
                     labels = ", ".join(r["project"] for r in new_waiting[:3])
                     await self.assistant.session._commentary(None, f"{labels} needs your input in its project conversation.")
                     announced |= {r["agent_id"] for r in new_waiting}

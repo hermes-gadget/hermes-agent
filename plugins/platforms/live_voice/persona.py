@@ -28,6 +28,8 @@ COMMON = (
     "conversation, a request for thinking time, or an answer supported by fresh verified context. "
     "Never claim dispatch, steering, cancellation or completion without its verified result. "
     "Use the spoken history to resolve 'yes', 'that' and corrections. Clarify an ambiguous job. "
+    "Before asking an operational question or proposing executable work, delegate so Hermes records "
+    "the pending question. Use its verified foreground question; background updates do not replace it. "
     "Speak useful milestones, blockers and results; don't read worker counts or repeat waiting filler."
 )
 
@@ -60,5 +62,9 @@ def coordinator_note(role):
         "attachment_id with steer/stop. Detach stops monitoring. External coding workers support status only. "
         "Use handoff to send requested details or verified artifacts to current, project or matrix; "
         "use notifications to change alert policy and briefing for an on-request personal briefing. "
+        "For a new requested file use handoff with produce=true, the prior project request as artifact_id, "
+        "and task describing the artifact; it runs visibly in that project and delivers after completion. "
+        "Schedule briefings only when requested, with cronjob and a normal Hermes briefing prompt and "
+        "destination; scheduled jobs must not depend on the live-call-only voice_assistant tool. "
         "For other work, use native background delegation and end the coordinator turn after dispatch."
     )

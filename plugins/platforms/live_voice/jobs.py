@@ -53,8 +53,9 @@ class JobAttachments:
             if agent_id.startswith("native:"):
                 with self.assistant.runner._profile_scope_for_source(source):
                     result = json.loads(await asyncio.to_thread(delegate_task, action="list", parent_agent=parent))
-                if any("native:" + str(c["subagent_id"]) == agent_id for c in result.get("subagents", [])):
-                    return key, source, state, parent, agent_id.removeprefix("native:")
+                child = next((c for c in result.get("subagents", []) if "native:" + str(c["subagent_id"]) == agent_id), None)
+                if child:
+                    return key, source, state, parent, child
         raise ValueError("No current authorized native Hermes job matches that agent. External agents support status only.")
 
     async def attach(self, args, did):
@@ -69,7 +70,11 @@ class JobAttachments:
         if len(matches) != 1:
             raise ValueError("Choose one current agent ID from agents; the job is missing or ambiguous.")
         row = matches[0]
+        if a.session.cfg.assistant_role == "project" and row["platform"] == "matrix":
+            raise ValueError("Use the personal Matrix conversation to control personal assistant work.")
         key, source, state, parent, child = await self.locate(row["agent_id"])
+        child_session_id = child.get("child_session_id", "") if child else ""
+        child = child["subagent_id"] if child else None
         adapter = a.runner._delivery_adapter_for(source)
         store = getattr(adapter, "_session_store", None)
         sid = str(store.peek_session_id(key) or "") if store else ""
@@ -81,11 +86,20 @@ class JobAttachments:
         attachment = VoiceJobAttachment(ident, row["agent_id"], row["project"], key, sid, generation, row["monitor_url"])
         # Saved records describe a job; only this live source/object pair can control it.
         record = await asyncio.to_thread(a.db.voice_create_record, "attachment", ident, a.owner_key,
-            {**asdict(attachment), "instance": self.instance(), "child_id": child}, status="watching")
+            {**asdict(attachment), "instance": self.instance(), "child_id": child,
+             "child_session_id": child_session_id, "source": source.to_dict(),
+             "target_home": str(adapter._canonicalize(source).runtime_home)}, status="watching")
         if record["status"] == "detached":
             await asyncio.to_thread(a.db.voice_change_record, "attachment", ident, a.owner_key, {"detached"}, "watching")
         self.targets[ident] = (source, target, parent, child)
-        return {**asdict(attachment), "status": "attached", "controls": ["steer", "stop", "respond"]}
+        result = {**asdict(attachment), "status": "attached", "controls": ["steer", "stop", "respond"]}
+        if not child and args.get("_register_question", True):
+            from tools.clarify_gateway import get_pending_for_session
+            question = get_pending_for_session(key, include_choice_prompts=True)
+            if question is not None and not question.event.is_set():
+                result["pending_question"] = await a.interactions.prompt({"question": question.question, "choices": question.choices,
+                    "native": {"attachment_id": ident, "clarify_id": question.clarify_id}}, "attach-question:" + ident)
+        return result
 
     def instance(self):
         runner = self.assistant.runner
@@ -161,6 +175,15 @@ class JobAttachments:
 
     async def answer_clarify(self, native, answer):
         from tools.clarify_gateway import get_pending_for_session, respond_to_id, TEXT_RESOLVED
+        if native["attachment_id"] not in self.targets:
+            a = self.assistant
+            saved = await asyncio.to_thread(a.db.voice_record, "attachment", native["attachment_id"], a.owner_key)
+            if saved is None or saved["payload"].get("instance") != self.instance():
+                raise ValueError("The question's execution changed; attach its current conversation.")
+            restored = await self.attach({"agent_id": saved["payload"]["agent_id"], "_register_question": False}, "restore:" + native["clarify_id"])
+            if any(restored[k] != saved["payload"][k] for k in ("session_id", "generation")):
+                raise ValueError("The question's execution changed; inspect its current question.")
+            self.targets[native["attachment_id"]] = self.targets[restored["attachment_id"]]
         source, guard, parent, child = self.authority(native["attachment_id"])
         if child:
             raise ValueError("Answer this clarification through its owning project conversation.")

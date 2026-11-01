@@ -63,6 +63,7 @@ def register_tools():
                     "proposed_action": {"type": "object", "description": "Assistant operation to perform only if the user confirms this proposal."},
                     "destination": {"type": "string", "enum": ["current", "project", "matrix"]},
                     "artifact_id": {"type": "string", "description": "Verified result/artifact ID, normally a project request ID."},
+                    "produce": {"type": "boolean", "description": "For handoff: ask the owning project agent to produce task as a new file, then deliver it."},
                     "mode": {"type": "string", "enum": ["decisions", "watched", "milestones", "muted"]},
                     "until": {"type": "string", "description": "ISO timestamp for temporary notification mode, including timezone."},
                 },
