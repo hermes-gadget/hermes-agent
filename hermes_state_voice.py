@@ -1,9 +1,68 @@
 """Voice transcripts and dispatch receipts, separate from model tool history."""
 import json
+import hashlib
 import time
 
 
 class SessionVoiceMixin:
+    def voice_create_record(self, kind, ident, owner_key, payload, *, scope="", session_id="", status="pending"):
+        fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        def create(conn):
+            now = time.time()
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO voice_assistant_records "
+                "(kind,id,owner_key,conversation_key,session_id,fingerprint,status,payload,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)", (kind, ident, owner_key, scope, session_id or None,
+                fingerprint, status, json.dumps(payload), now, now))
+            row = dict(conn.execute("SELECT * FROM voice_assistant_records WHERE kind=? AND id=?", (kind, ident)).fetchone())
+            if row["owner_key"] != owner_key or row["fingerprint"] != fingerprint:
+                raise ValueError("Voice record ID belongs to a different operation.")
+            row["claimed"] = cur.rowcount == 1
+            row["payload"] = json.loads(row["payload"])
+            return row
+        return self._execute_write(create)
+
+    def voice_records(self, kind, owner_key, *, scope=None, session_id=None, limit=100):
+        query = "SELECT * FROM voice_assistant_records WHERE kind=? AND owner_key=?"
+        params = [kind, owner_key]
+        if scope is not None:
+            query += " AND conversation_key=?"
+            params.append(scope)
+        if session_id is not None:
+            query += " AND session_id IS ?"
+            params.append(session_id or None)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(min(max(int(limit), 1), 500))
+        return [{**dict(row), "payload": json.loads(row["payload"])} for row in self._read_all(query, params)]
+
+    def voice_change_record(self, kind, ident, owner_key, expected, status, payload=None):
+        def change(conn):
+            row = conn.execute("SELECT * FROM voice_assistant_records WHERE kind=? AND id=? AND owner_key=?",
+                               (kind, ident, owner_key)).fetchone()
+            if row is None or row["status"] not in expected:
+                return None
+            data = dict(row)
+            content = payload if payload is not None else json.loads(data["payload"])
+            now = time.time()
+            conn.execute("UPDATE voice_assistant_records SET status=?,payload=?,updated_at=? WHERE kind=? AND id=?",
+                         (status, json.dumps(content), now, kind, ident))
+            return {**data, "status": status, "payload": content, "updated_at": now}
+        return self._execute_write(change)
+
+    def voice_focus_prompt(self, ident, owner_key, scope, session_id):
+        def focus(conn):
+            row = conn.execute(
+                "SELECT status FROM voice_assistant_records WHERE kind='interaction' AND id=? AND owner_key=? "
+                "AND conversation_key=? AND session_id IS ?", (ident, owner_key, scope, session_id or None)).fetchone()
+            if row is None or row["status"] not in {"queued", "foreground"}:
+                return False
+            conn.execute("UPDATE voice_assistant_records SET status='queued' WHERE kind='interaction' "
+                         "AND owner_key=? AND conversation_key=? AND session_id IS ? AND status='foreground'",
+                         (owner_key, scope, session_id or None))
+            conn.execute("UPDATE voice_assistant_records SET status='foreground' WHERE kind='interaction' AND id=?", (ident,))
+            return True
+        return self._execute_write(focus)
+
     def open_voice_call(self, call_id, conversation_key, user_id, session_id=""):
         self._execute_write(lambda conn: conn.execute(
             "INSERT OR IGNORE INTO voice_calls(call_id,conversation_key,user_id,session_id,started_at) "

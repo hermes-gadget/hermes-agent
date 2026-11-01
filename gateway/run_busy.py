@@ -1176,6 +1176,8 @@ class GatewayBusySessionMixin:
         return format_status_text()
 
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
+        from gateway.control_target import validate_execution
+        validate_execution(event, self)
         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
         from gateway.run import _INTERRUPT_REASON_STOP
         await _busy_accepted()
@@ -1227,6 +1229,8 @@ class GatewayBusySessionMixin:
         return t("gateway.queue.queued") + (t("gateway.queue.queued_depth", depth=depth) if depth > 1 else "")
 
     async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):
+        from gateway.control_target import validate_execution
+        validate_execution(event, self)
         # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool
         # result) — no interrupt, no new user turn, no role-alternation violation.
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -1238,6 +1242,8 @@ class GatewayBusySessionMixin:
         running_agent = _steer_state.turn.agent if _steer_state else None
 
         async def _queue_fallback(reply: str) -> Optional[str]:
+            if event._execution_target is not None:
+                raise ValueError("The observed agent cannot accept steering; no new turn was queued.")
             # Turn-boundary fallback: queue the steer text as its own follow-up turn.
             adapter = self._delivery_adapter_for(source)
             if adapter and await self._queue_command_turn(quick_key, event, MessageEvent(

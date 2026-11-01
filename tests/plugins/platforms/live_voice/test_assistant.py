@@ -329,3 +329,75 @@ async def test_enabled_wire_session_seeds_history_and_records_actual_spoken_frag
             await session.close("test")
     rows = rig.db.voice_history("personal-key", "@ben:test", "personal")
     assert any(r["speaker"] == "assistant" and r["text"] == "I'll check the appointment." for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_foreground_answer_survives_updates_and_executes_a_proposal_once(rig):
+    question = await rig.service.handle({"action": "prompt", "question": "Fix the parser?",
+        "proposed_action": {"action": "dispatch", "project": "radio", "task": "Fix the parser"}}, "proposal")
+    await rig.service.quiet("The unrelated docs worker finished.")
+    answer = await rig.service.interactions.intercept("yes", "answer")
+    assert '"status": "answered"' in answer
+    assert (await rig.started.get()).text == "Fix the parser"
+    repeated = await rig.service.handle({"action": "respond", "prompt_id": question["prompt_id"], "response": "yes"}, "again")
+    assert repeated["status"] == "answered" and len(rig.channel.sent) == 1 and rig.started.empty()
+    other = rig.db.voice_records("interaction", "other-owner")
+    assert other == []
+
+
+@pytest.mark.asyncio
+async def test_interrupted_question_is_repeated_and_new_conversation_cannot_answer_old_prompt(rig):
+    question = await rig.service.handle({"action": "prompt", "question": "Build it?",
+        "proposed_action": {"action": "dispatch", "project": "radio", "task": "Build it"}}, "proposal")
+    await rig.service.interactions.interrupted()
+    result = await rig.service.interactions.intercept("yes", "heard-half")
+    assert "ask this question again" in result and rig.started.empty()
+    assert '"status": "answered"' in await rig.service.interactions.intercept("yes", "heard-all")
+    rig.db.create_session("fresh-personal", "matrix", user_id="@ben:test")
+    rig.session.adapter._session_store.peek_session_id = lambda _: "fresh-personal"
+    with pytest.raises(ValueError, match="pending question"):
+        await rig.service.handle({"action": "respond", "prompt_id": question["prompt_id"], "response": "yes"}, "stale")
+
+
+def running_native_job(rig):
+    source = rig.target.build_source(chat_id="33", chat_name="Radio", chat_type="group", user_id="22", guild_id="7")
+    key = rig.target._source_session_key(source)
+    rig.runner.session_store._entries[key] = SessionEntry(key, "coding", datetime.now(), datetime.now(), origin=source)
+    state = rig.runner._sessions[key] = SessionState()
+    state.turn.agent = SimpleNamespace(get_activity_summary=lambda: {"description": "Running tests"}, cwd="/radio")
+    state.turn.event = SimpleNamespace(source=source, text="Fix parser", metadata={})
+    state.persistent.run_generation = 7
+    return source, key, state
+
+
+@pytest.mark.asyncio
+async def test_attach_existing_native_job_and_refuse_replacement_even_in_same_channel(rig):
+    source, key, state = running_native_job(rig)
+    attached = await rig.service.handle({"action": "attach", "agent_id": "gateway:" + key}, "attach")
+    result = await rig.service.handle({"action": "steer", "attachment_id": attached["attachment_id"],
+                                      "task": "Keep packet compatibility"}, "correction")
+    assert result["status"] == "requested"
+    event = await rig.started.get()
+    assert event.text == "/steer Keep packet compatibility" and event._execution_target is not None
+    state.persistent.run_generation += 1
+    with pytest.raises(ValueError, match="execution ended or changed"):
+        await rig.service.handle({"action": "stop", "attachment_id": attached["attachment_id"]}, "stop-replacement")
+    assert rig.started.empty()
+    with pytest.raises(ValueError, match="execution ended or changed"):
+        await rig.target.handle_message(event)
+
+
+@pytest.mark.asyncio
+async def test_attached_clarification_answers_exact_question_without_starting_another_turn(rig):
+    from tools.clarify_gateway import register, clear_session, get_pending_for_session
+    source, key, state = running_native_job(rig)
+    attached = await rig.service.handle({"action": "attach", "agent_id": "gateway:" + key}, "attach")
+    entry = register("radio-choice", key, "Which format?", ["JSON", "CSV"])
+    try:
+        await rig.service.interactions.prompt({"question": entry.question, "choices": entry.choices,
+            "native": {"attachment_id": attached["attachment_id"], "clarify_id": entry.clarify_id}}, "native-question")
+        result = await rig.service.interactions.intercept("CSV", "answer")
+        assert '"status": "answered"' in result and entry.event.is_set() and entry.response == "CSV"
+        assert rig.started.empty() and get_pending_for_session(key, include_choice_prompts=True) is entry
+    finally:
+        clear_session(key)

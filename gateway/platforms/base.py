@@ -3979,6 +3979,9 @@ class BasePlatformAdapter(ABC):
         from gateway.session_ingress_burst import burst_gate
         behind_burst = await burst_gate(self, event, session_key)  # a serial reader's command waits too
         # On-entry self-heal: clear a guard whose owner task already exited.
+        if event._execution_target is not None:
+            from gateway.control_target import validate_execution
+            validate_execution(event, self.gateway_runner)
         if session_key in self._active_sessions:
             self._heal_stale_session_lock(session_key)
         if session_key in self._active_sessions or behind_burst:

@@ -54,5 +54,11 @@ def coordinator_note(role):
         "status. Use steer/stop with the returned request_id for changes to dispatched jobs. "
         "Use continue with a prior request_id and a new task to resume its Discord conversation. "
         "Use select to remember the selected project. Never invent a channel, agent state or monitoring link. "
+        "Register operational questions and executable proposals with prompt before asking them; use respond "
+        "for answers to recorded questions. Background updates never replace the foreground question. "
+        "Use attach with an exact native agent ID to watch or control work started outside voice; use its "
+        "attachment_id with steer/stop. Detach stops monitoring. External coding workers support status only. "
+        "Use handoff to send requested details or verified artifacts to current, project or matrix; "
+        "use notifications to change alert policy and briefing for an on-request personal briefing. "
         "For other work, use native background delegation and end the coordinator turn after dispatch."
     )
