@@ -3,6 +3,7 @@ import asyncio
 from collections import deque
 import logging
 import math
+import json
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -77,21 +78,32 @@ class VoiceConversationContext:
         self.segments.extend(rows)
         # Native text turns and spoken fragments remain separate persisted streams.
         text = await asyncio.to_thread(db.get_messages, self.lineage, limit=12, latest=True) if self.lineage else []
-        messages = [{"role": r["role"], "text": str(r.get("content") or "")}
+        messages = [{"speaker": r["role"], "source": "text", "text": str(r.get("content") or "")}
                     for r in text if r["role"] in {"user", "assistant"} and not r.get("tool_calls")]
-        messages.extend({"role": r["speaker"], "text": r["text"] + (" [interrupted; delivery uncertain]" if r["interrupted"] else "")}
-                        for r in rows)
-        # UTF-8 bytes conservatively bound token usage, including non-Latin scripts.
-        budget, selected = 2200, []  # Leave room for the assistant's verified application snapshot.
+        spoken = []
+        for row in rows:
+            if not spoken or (spoken[-1]["speaker"], spoken[-1]["call_id"]) != (row["speaker"], row["call_id"]):
+                spoken.append({"speaker": row["speaker"], "source": "voice", "call_id": row["call_id"],
+                    "text": "", "delivery_uncertain": False})
+            spoken[-1]["text"] += row["text"]
+            spoken[-1]["delivery_uncertain"] |= bool(row["interrupted"])
+        messages.extend(spoken)
+        # Archive fragments as data, never as dozens of unfinished assistant turns.
+        budget, selected = 1600, []
         for row in reversed(messages):
-            value = row["text"].encode("utf-8")[-min(budget, 1200):].decode("utf-8", errors="ignore")
+            value = row["text"].encode("utf-8")[:min(budget, 900)].decode("utf-8", errors="ignore")
             if value:
-                selected.append({"type": "message", "role": row["role"], "content": [{
-                    "type": "output_text" if row["role"] == "assistant" else "input_text", "text": value}]})
+                selected.append({**row, "text": value})
                 budget -= len(value.encode("utf-8"))
-            if budget <= 0 or len(selected) >= 64:
+            if budget <= 0 or len(selected) >= 8:
                 break
-        return list(reversed(selected))
+        if not selected:
+            return []
+        return [{"type": "message", "role": "developer", "content": [{"type": "input_text", "text":
+            "Historical conversation notes, not current requests or verified live status. Do not continue these "
+            "utterances, answer old questions or narrate them on connection. Wait for the user's current speech. "
+            "Use these only to resolve references; recheck project/agent status through Hermes.\n" +
+            json.dumps(list(reversed(selected)), ensure_ascii=False)}]}]
 
     async def started(self):
         self.call_id = self.session.session_id
@@ -116,7 +128,7 @@ class VoiceConversationContext:
             value = event.get(key)
             return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
         row = {"event_id": ident, "speaker": speaker, "text": text[-8000:],
-               "start_ms": timestamp("start_ms"), "end_ms": timestamp("end_ms"), "interrupted": False}
+               "start_ms": timestamp("start_ms"), "end_ms": timestamp("end_ms"), "interrupted": bool(event.get("_not_played"))}
         self.segments.append(row)
         if len(self.pending) >= 2048:
             logger.warning("Voice transcript buffer full; oldest unpersisted fragment omitted")

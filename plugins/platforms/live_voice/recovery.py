@@ -55,6 +55,7 @@ class LiveRecoveryMixin:
             return True
         self._recovering = True
         self._connection_ready.clear()
+        self.turn.close("reconnecting")
         if self.buffer is not None:
             self.buffer.flush()
         self.assistant.conversation.interrupted()
@@ -129,8 +130,8 @@ class LiveRecoveryMixin:
                     self.recovery_durations_ms.append((time.monotonic() - started) * 1000)
                     recovered = True
                     await self.assistant.quiet(
-                        "Voice connection restored. Continue the same conversation. Saved receipts and pending "
-                        "questions are authoritative; do not replay actions. Give one short recap of changed watched jobs.")
+                        "Voice connection restored; same logical conversation. Saved receipts and pending "
+                        "questions remain authoritative. Accepted work has not been replayed.")
                     receipts = await asyncio.to_thread(self.assistant.db.voice_dispatches,
                         self.assistant.owner_key) if self.assistant.db else []
                     changes = [f"{r['payload'].get('project', 'Your project')} has a new result in its project conversation."
