@@ -286,6 +286,9 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
+        from gateway.status import _get_process_hermes_home
+        from hermes_cli.plugins_control import plugin_control_handlers
+        socket_home = _get_process_hermes_home()
         from gateway.run_active_work_verb import active_work_verb
         from gateway.relay.link import relay_link_verb
         from gateway.drain_control import RESTART_WAIT_REASON
@@ -353,6 +356,7 @@ async def _start_gateway_start_control_socket(runner):
             return {"multiplex": bool(getattr(runner.config, "multiplex_profiles", False)), **result}
 
         _control_server = GatewayControlServer(
+            socket_home,
             verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
@@ -366,7 +370,8 @@ async def _start_gateway_start_control_socket(runner):
                            "reload-plugins": reload_plugins_verb(runner, _main_loop),
                            # The per-gateway relay secret exists only in this process: the dashboard
                            # mints Team Gateway link codes through it.
-                           "relay-link": relay_link_verb})
+                           "relay-link": relay_link_verb,
+                           **plugin_control_handlers(runner, _main_loop, socket_home)})
         _control_server.ticket_store = runner.session_ticket_store
         # The Webapp's verbs answer from the socket's first moment ("starting" until the listener
         # settles): a client polling a restarting gateway must never read "unknown verb" as a failure.
