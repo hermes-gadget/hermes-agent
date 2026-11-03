@@ -94,7 +94,29 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 
 ## Recovering a plugin without restarting the gateway
 
-On a gateway supporting single-plugin control, run:
+Start with the `plugin_hook_timeout` JSON warning: it names the plugin, callback,
+hook, profile home, and timeout budget. To inspect the running gateway's health
+from a Hermes Python environment, use the gateway's launch profile home:
+
+```python
+import json
+from gateway.control_socket import query_gateway_control
+from hermes_constants import get_hermes_home
+
+status = query_gateway_control(get_hermes_home(), "status")
+if status is None:
+    raise SystemExit("No gateway answered for this home")
+print(json.dumps(status["plugin_health"], indent=2))
+```
+
+The response is keyed by profile home. `disabled_hooks` lists quarantined
+callbacks, including callbacks whose workers have already finished;
+`stuck_hooks` lists workers still running. A callback stays quarantined until
+explicit reload or registration teardown, regardless of elapsed time or worker
+completion. The invocation that times out fails closed for `pre_tool_call`;
+later calls skip that callback while healthy hooks continue to run.
+
+After fixing the plugin's blocking operation, reload only the named plugin:
 
 ```bash
 hermes plugins reload my-plugin
@@ -106,10 +128,8 @@ point again. Other plugins and profiles keep their registrations. Hooks are live
 immediately; existing chats keep their cached tool schemas and system prompts.
 Start a new session to pick up changed schemas or prompt sections.
 
-Look for `plugin_hook_timeout` JSON warnings to identify the plugin and callback
-that exceeded its budget. The gateway control socket's `plugin_health` status
-field distinguishes still-running workers from completed timeouts. Reloading does
-not cancel a Python thread that is already running: an old worker stays in health
+Query health again to confirm the callback has left `disabled_hooks`. Reloading
+does not terminate a Python thread that is already running: an old worker stays in health
 with `registered: false` until it exits. Plugin authors should release resources in
 `ctx.on_unload` callbacks; a teardown callback that hangs can prevent reload from
 completing. The CLI reports failures and never restarts the gateway automatically.
