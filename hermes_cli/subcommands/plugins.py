@@ -87,6 +87,11 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
             "capabilities are never accepted unattended. Off by default."))
     plugins_auto.add_argument("state", nargs="?", choices=["on", "off"], help="Omit to show the current setting")
 
+    plugins_reload = plugins_subparsers.add_parser(
+        "reload", help="Reload exactly one plugin in the running gateway without restarting it")
+    plugins_reload.add_argument("name", help="Plugin name or canonical key to reload")
+    add_json_flag(plugins_reload, "Print the gateway reload result as JSON")
+
     plugins_adopt = plugins_subparsers.add_parser(
         "adopt",
         help="Adopt a self-cloned plugin dir into provenance tracking",

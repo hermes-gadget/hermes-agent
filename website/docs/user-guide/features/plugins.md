@@ -100,6 +100,31 @@ The gateway does not load project-local plugins. Every Hermes session (`hermes`,
 
 To use a plugin, install it as a user plugin (`~/.hermes/plugins/` or `hermes plugins install`) and enable it with `hermes plugins enable <name>`.
 
+## Recovering a plugin without restarting the gateway
+
+On a gateway supporting single-plugin control, run:
+
+```bash
+hermes plugins reload my-plugin
+hermes -p work plugins reload my-plugin --json
+```
+
+This unloads that plugin's owned registrations and calls its registration entry
+point again. Other plugins and profiles keep their registrations. Hooks are live
+immediately; existing chats keep their cached tool schemas and system prompts.
+Start a new session to pick up changed schemas or prompt sections.
+
+Look for `plugin_hook_timeout` JSON warnings to identify the plugin and callback
+that exceeded its budget. The gateway control socket's `plugin_health` status
+field distinguishes still-running workers from completed timeouts. Reloading does
+not cancel a Python thread that is already running: an old worker stays in health
+with `registered: false` until it exits. Plugin authors should release resources in
+`ctx.on_unload` callbacks; a teardown callback that hangs can prevent reload from
+completing. The CLI reports failures and never restarts the gateway automatically.
+
+See the [CLI reference](../../reference/cli-commands.md#hermes-plugins) for profile
+selection, supported plugin kinds, and failure behavior.
+
 ## What plugins can do
 
 Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
