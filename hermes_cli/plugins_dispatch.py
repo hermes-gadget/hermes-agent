@@ -224,7 +224,7 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for cb in self._hooks.get(hook_name, []):
+        for cb in self.iter_hook_callbacks(hook_name):
             try:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
@@ -279,6 +279,7 @@ class PluginDispatchMixin:
         suppression_key = (hook_name, id(cb))
         gate_key = (*suppression_key, _hook_call_identity(kwargs))
         token = object()
+        plugin = self.hook_health.owner(hook_name, cb)
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)
             if (gate_key in self._hook_running_callbacks
@@ -311,6 +312,7 @@ class PluginDispatchMixin:
 
         def _release_token() -> None:
             with self._hook_timeout_lock:
+                self.hook_health.finished(hook_name, cb, token)
                 if self._hook_running_callbacks.get(gate_key) is token:
                     self._hook_running_callbacks.pop(gate_key, None)
                     abandoned = self._hook_abandoned.get(suppression_key)
@@ -347,6 +349,9 @@ class PluginDispatchMixin:
                 # callback for that call id until reload with no thread behind it.
                 if self._hook_running_callbacks.get(gate_key) is token:
                     self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
+                self.hook_health.timed_out(
+                    hook_name, cb, timeout, plugin=plugin,
+                    worker=token if self._hook_running_callbacks.get(gate_key) is token else None)
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
             return _HOOK_SKIPPED
@@ -478,7 +483,7 @@ class PluginDispatchMixin:
 
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
-        return bool(self._hooks.get(hook_name))
+        return bool(self.iter_hook_callbacks(hook_name))
 
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.
@@ -498,8 +503,9 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for cb in self._hooks.get(hook_name, []):
+        for cb in self.iter_hook_callbacks(hook_name):
             callback_name = getattr(cb, "__name__", repr(cb))
+            plugin = self.hook_health.owner(hook_name, cb)
             try:
                 ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
@@ -507,6 +513,7 @@ class PluginDispatchMixin:
                 if ret is not None:
                     results.append(ret)
             except asyncio.TimeoutError:
+                self.hook_health.timed_out(hook_name, cb, timeout, plugin=plugin)
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
                     results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
@@ -520,7 +527,8 @@ class PluginDispatchMixin:
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
         """Return a stable snapshot of callbacks registered for a hook."""
-        return tuple(self._hooks.get(hook_name, ()))
+        hooks = self._hook_reload_snapshot
+        return tuple((hooks if hooks is not None else self._hooks).get(hook_name, ()))
 
     def render_system_prompt_sections(
         self, session_info: Mapping[str, Any]
