@@ -183,6 +183,11 @@ def _dist_installed(req: str) -> Optional[bool]:
 
 
 class PluginLoaderMixin:
+    def reload_plugin(self, name: str) -> Dict[str, Any]:
+        """Unload and re-register one plugin; hooks live now, prompt/schema changes next session."""
+        from hermes_cli.plugins_reload import reload_plugin
+        return reload_plugin(self, name)
+
     def on_plugin_loaded(self, callback: Callable[[List[Dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
         :meth:`discover_and_load` (never emitted by an install RPC) with one

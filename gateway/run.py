@@ -5603,7 +5603,7 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
 
 
 async def _start_gateway_start_control_socket(runner):
-    """Start the gateway control socket (identify/status/pause-for-update); None when unavailable."""
+    """Start the gateway's composed control socket; None when unavailable."""
     import atexit
     _control_server = None
     try:
@@ -5618,6 +5618,8 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
+        from gateway.status import _get_process_hermes_home
+        from hermes_cli.plugins_control import plugin_control_handlers
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
@@ -5625,6 +5627,7 @@ async def _start_gateway_start_control_socket(runner):
         # path as SIGUSR1/service restarts (request_restart(via_service=True)); the updater (or the service
         # manager) relaunches after the code swap.
         _main_loop = asyncio.get_running_loop()
+        socket_home = _get_process_hermes_home()
 
         def _pause_for_update_handler() -> dict:
             try:
@@ -5664,6 +5667,7 @@ async def _start_gateway_start_control_socket(runner):
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
         _control_server = GatewayControlServer(
+            socket_home,
             verb_handlers={"pause-for-update": _pause_for_update_handler,
                            "rescan-profiles": _rescan_profiles_handler,
                            "unserve-profile": unserve_profile_verb(runner),
@@ -5672,7 +5676,8 @@ async def _start_gateway_start_control_socket(runner):
                            "purge-profile-identity": purge_profile_identity_verb(runner),
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
-                           "reload-plugins": reload_plugins_verb(runner, _main_loop)})
+                           "reload-plugins": reload_plugins_verb(runner, _main_loop),
+                           **plugin_control_handlers(runner, _main_loop, socket_home)})
         if not await _control_server.start():
             _control_server = None
         else:

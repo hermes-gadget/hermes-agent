@@ -1641,6 +1641,7 @@ Unified plugin management — general plugins, memory providers, and context eng
 | `install <identifier> [--force] [--ref COMMIT_SHA] [--allow-removed]` | Install a plugin from the Hermes plugin catalog (bare entry name), a Git URL, or `owner/repo` shorthand. Catalog names resolve to the reviewed 40-hex commit SHA and show declared capabilities. Source, checked-out revision, and a nested catalog-provenance block are recorded in the installer's `plugins/.install-metadata.json`; the `.hermes-catalog.json` copy inside the plugin directory is only for convenience and is never trusted. Raw URLs are flagged as custom (unreviewed) sources. `--ref` selects a full-SHA custom pin and records the SHA actually checked out. `--allow-removed` (DANGEROUS) bypasses the removed-plugin blocklist at install and exempts that install from update, enable, and load-time kill-list checks. |
 | `search [term] [--json]` | Search the Hermes plugin catalog (matches entry names, descriptions, and declared tools; omit `term` to list everything). The catalog is curated in-repo (`plugin-catalog/`), refreshed from the live repo with a 6-hour cache, and falls back to the in-tree copy offline. Cataloged ≠ audited — admission reviews the entry, not the code. |
 | `update <name>` | Re-pin catalog installs to the reviewed catalog SHA, or update a custom Git install from its recorded source/feed. PM validates active-plugin dependencies before code publication. Explicit custom pins move only with `install --force --ref <new-commit>`. |
+| `reload <name> [--json]` | Ask the running gateway to unload and re-register exactly one general plugin. Requires gateway support for the `reload-plugin` control verb. Unknown, ambiguous, disabled, unsupported, or failed reloads exit non-zero; there is no restart or reload-all fallback. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |
@@ -1655,6 +1656,27 @@ Provider plugin selections are saved to `config.yaml`:
 - `context.engine` — active context engine (`"compressor"` = built-in default)
 
 General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
+
+`hermes plugins reload my-plugin` targets the active profile; use
+`hermes -p work plugins reload my-plugin` for a served profile. Hooks take effect
+immediately. Existing conversations retain their cached tool schemas and system
+prompts; schema and prompt changes apply to new sessions. Directory plugins are
+imported again, including their relative submodules. Pip entry-point plugins
+re-register from the installed module; replacing an installed Python distribution
+requires a fresh process. Category-owned providers and deferred platforms use
+their own lifecycle and are refused by this command.
+
+The gateway control socket's `status` result can expose `plugin_health`, keyed by
+profile home, with `stuck_hooks` and `timed_out_hooks`. Each row identifies the
+plugin, hook, callback, timeout budget, timestamp, running worker count, and whether
+the callback is still registered. The matching `plugin_hook_timeout` warning
+contains JSON so plain-text logs retain those fields. A reload replaces future
+dispatch registrations; it cannot kill an abandoned Python thread. Such workers
+remain visible with `registered: false` until they finish. A failed registration
+reports `unloaded: true`; inspect the load error before retrying. If the gateway
+does not confirm a reload, inspect status/logs before retrying because the command
+may have reached it despite a lost response.
+
 Git installs also record only their canonical source, exact installed revision, and
 pin status in the profile-local `plugins/.install-metadata.json` sidecar. It does
 not contain plugin config, environment values, secrets, or capability grants.
