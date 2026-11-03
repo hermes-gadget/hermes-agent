@@ -60,6 +60,7 @@ from hermes_cli.plugins_dispatch import (
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
+from hermes_cli.plugins_health import PluginHookHealth
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
@@ -284,6 +285,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
         self._plugins: dict[str, LoadedPlugin] = {}
         self._hooks: dict[str, list[Callable]] = {}
+        self._hook_reload_snapshot: Optional[dict[str, tuple]] = None
+        self.hook_health = PluginHookHealth(self)
         # Fallback hooks registered by a memory provider before general discovery.
         self._memory_hook_registrations: dict[tuple[str, str], list[PluginRegistration]] = {}
         self._middleware: dict[str, list[Callable]] = {}

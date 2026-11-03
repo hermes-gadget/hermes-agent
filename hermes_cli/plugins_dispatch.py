@@ -190,6 +190,7 @@ class _HookRun:
 
     def __init__(self) -> None:
         self.done = threading.Event()
+        self.finished = False
         self.cancelled = threading.Event()
         self._lock = threading.Lock()
         self._loop = None
@@ -328,7 +329,7 @@ class PluginDispatchMixin:
         # unrelated adapter payloads into one monolithic compatibility contract.
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
-        return self._run_hook_callbacks(hook_name, self._hooks.get(hook_name, []), kwargs)
+        return self._run_hook_callbacks(hook_name, self.iter_hook_callbacks(hook_name), kwargs)
 
     def _run_hook_callbacks(self, hook_name: str, callbacks: Any, kwargs: dict[str, Any],
                             failed: Optional[list] = None) -> list[Any]:
@@ -393,7 +394,7 @@ class PluginDispatchMixin:
         with self._hook_timeout_lock:
             return (hook_name, id(cb)) in self._hook_disabled_callbacks
 
-    def _begin_hook_run(self, hook_name: str, cb: Callable, kwargs: Dict[str, Any]):
+    def _begin_hook_run(self, hook_name: str, cb: Callable, kwargs: dict[str, Any]):
         key = (hook_name, id(cb), _hook_call_identity(kwargs, hook_name))
         with self._hook_timeout_lock:
             if key[:2] in self._hook_disabled_callbacks:
@@ -409,6 +410,11 @@ class PluginDispatchMixin:
             if self._hook_running_callbacks.get(key) is run:
                 self._hook_running_callbacks.pop(key)
 
+    def _hook_worker_finished(self, hook_name: str, cb: Callable, run: _HookRun) -> None:
+        with self._hook_timeout_lock:
+            run.finished = True
+            self.hook_health.finished(hook_name, cb, run)
+
     def _disable_hook_callback(self, key: tuple, run: _HookRun, cb: Callable, timeout: float) -> None:
         with self._hook_timeout_lock:
             # A reload may have retired this invocation while it was waiting. Its deadline
@@ -419,6 +425,9 @@ class PluginDispatchMixin:
             self._hook_disabled_callbacks[key[:2]] = cb
             runs = [self._hook_running_callbacks.pop(k) for k in list(self._hook_running_callbacks)
                     if k[:2] == key[:2]]
+            self.hook_health.timed_out(
+                key[0], cb, timeout, plugin=self.hook_health.owner(key[0], cb),
+                workers=tuple(active for active in runs if not active.finished))
         for active in runs:
             active.cancel()
         logger.warning(
@@ -459,6 +468,7 @@ class PluginDispatchMixin:
             except BaseException as exc:
                 failure["exc"] = exc
             finally:
+                self._hook_worker_finished(hook_name, cb, run)
                 run.done.set()
 
         thread = threading.Thread(target=_runner, name=f"hermes-hook-{callback_name}"[:40], daemon=True)
@@ -481,7 +491,7 @@ class PluginDispatchMixin:
             self._finish_hook_run(key, run)
 
     async def _run_hook_callback_async(
-        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
+        self, hook_name: str, cb: Callable, kwargs: dict[str, Any], timeout: float
     ) -> Any:
         # Keep async callbacks on the caller's loop; a synchronous callback must not block it.
         if not (inspect.iscoroutinefunction(cb) or inspect.iscoroutinefunction(getattr(cb, "__call__", None))):
@@ -495,6 +505,7 @@ class PluginDispatchMixin:
 
         task = asyncio.create_task(run.await_result(_invoke()))
         task.add_done_callback(_consume_hook_task)
+        task.add_done_callback(lambda _: self._hook_worker_finished(hook_name, cb, run))
         try:
             # wait_for waits for cancellation cleanup, which a broken callback can suppress
             # forever. wait bounds the caller independently of the callback's cooperation.
@@ -637,7 +648,7 @@ class PluginDispatchMixin:
 
         if safe_worker_enabled():
             return False
-        return bool(self._hooks.get(hook_name))
+        return bool(self.iter_hook_callbacks(hook_name))
 
     def track_hook(self, context: Any, hook_name: str, callback: Callable, *, hold_stream: bool = False):
         """Register ``callback`` for ``hook_name`` on behalf of ``context`` (unknown names warn but are
@@ -645,7 +656,8 @@ class PluginDispatchMixin:
         the user first, so this profile's replies are not streamed (:meth:`holds_stream`)."""
         from hermes_cli.plugins import VALID_HOOKS
 
-        handle = context._track_callback("hook", hook_name, callback, self._hooks, VALID_HOOKS)
+        from hermes_cli.plugins_health import register_hook
+        handle = register_hook(context, hook_name, callback)
         if hold_stream and hook_name != STREAM_HOLDING_HOOK:
             logger.warning("Plugin '%s' set hold_stream on '%s'; only %s rewrites the reply, ignored",
                            context.manifest.name, hook_name, STREAM_HOLDING_HOOK)
@@ -703,7 +715,7 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for cb in self._hooks.get(hook_name, []):
+        for cb in self.iter_hook_callbacks(hook_name):
             if self._hook_callback_disabled(hook_name, cb):
                 continue
             try:
@@ -735,7 +747,8 @@ class PluginDispatchMixin:
 
         if safe_worker_enabled():
             return ()
-        return tuple(self._hooks.get(hook_name, ()))
+        hooks = self._hook_reload_snapshot
+        return tuple((hooks if hooks is not None else self._hooks).get(hook_name, ()))
 
     def render_system_prompt_sections(
         self, session_info: Mapping[str, Any]
