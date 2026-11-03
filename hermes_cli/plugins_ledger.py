@@ -134,6 +134,8 @@ class PluginLedgerMixin:
         self._remove_identity(callbacks, callback)
         if not callbacks:
             mapping.pop(key, None)
+        if mapping is self._hooks and not any(cb is callback for cb in callbacks):
+            self._forget_hook_callback(key, callback)
 
     def _restore_mapping(self, mapping: Dict[str, Any], key: str, current: Any, previous: Optional[Any]) -> bool:
         """Restore a manager-local mapping only when *current* is still present."""
@@ -296,8 +298,10 @@ class PluginLedgerMixin:
             container.clear()
         self._context_engine = None
         with self._hook_timeout_lock:
+            runs = list(self._hook_running_callbacks.values())
             self._hook_running_callbacks.clear()
-            self._hook_abandoned.clear()
-            self._hook_timeout_suppressed_until.clear()
+            self._hook_disabled_callbacks.clear()
+        for run in runs:
+            run.cancel()
         self._hook_failures_reported.clear()
         self._discovered = False

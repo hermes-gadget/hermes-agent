@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import threading
 import textwrap
 import time
+from contextlib import contextmanager
 
 import pytest
 import hermes_yaml as yaml
@@ -16,9 +18,24 @@ def _write_plugin(home, name, source):
     (directory / "__init__.py").write_text(textwrap.dedent(source))
 
 
+@contextmanager
+def _profile_scope(home):
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home_token = set_hermes_home_override(home)
+    secret_token = set_secret_scope({}, profile_home=str(home))
+    try:
+        yield
+    finally:
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+
+
 @pytest.mark.parametrize("callback_kind", ["sync", "async"])
 def test_timed_out_plugin_does_not_poison_tool_calls_until_reload(tmp_path, monkeypatch, callback_kind):
     import hermes_cli.plugins as plugins
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
     from model_tools import handle_function_call
 
     home = tmp_path / "home"
@@ -41,7 +58,8 @@ def test_timed_out_plugin_does_not_poison_tool_calls_until_reload(tmp_path, monk
         async def async_hook(**kwargs):
             calls.append(kwargs["tool_call_id"])
             try:
-                await asyncio.sleep(10)
+                if not release.is_set():
+                    await asyncio.sleep(10)
                 return {"action": "block", "message": "late result"}
             finally:
                 finished.set()
@@ -91,6 +109,32 @@ def test_timed_out_plugin_does_not_poison_tool_calls_until_reload(tmp_path, monk
         assert second == {"ok": True}, second
         assert bad.calls == ["first"]
         assert good.calls == ["first", "second"]
+        # The same plugin in another served profile still runs: A -> B -> A under multiplex.
+        home_b = tmp_path / "home-b"
+        for name in ("timeout_probe", "healthy_probe"):
+            _write_plugin(home_b, name, (home / "plugins" / name / "__init__.py").read_text())
+        (home_b / "config.yaml").write_text((home / "config.yaml").read_text())
+        was_multiplex = is_multiplex_active()
+        set_multiplex_active(True)
+        try:
+            with _profile_scope(home):
+                assert call("profile-a") == {"ok": True}
+            with _profile_scope(home_b):
+                manager_b = plugins.get_plugin_manager()
+                manager_b.discover_and_load()
+                try:
+                    bad_b = manager_b._plugins["timeout_probe"].module
+                    bad_b.release.set()
+                    assert call("profile-b") == {"error": "late result"}
+                    assert bad_b.calls == ["profile-b"]
+                finally:
+                    manager_b.unload()
+            with _profile_scope(home):
+                assert plugins.get_plugin_manager() is manager
+                assert call("profile-a-return") == {"ok": True}
+                assert bad.calls == ["first"]
+        finally:
+            set_multiplex_active(was_multiplex)
         if callback_kind == "async":
             assert bad.finished.wait(5), "timed-out coroutine was not cancelled"
         bad.release.set()
@@ -105,19 +149,17 @@ def test_timed_out_plugin_does_not_poison_tool_calls_until_reload(tmp_path, monk
         reloaded = manager._plugins["timeout_probe"].module
         reloaded.release.set()
         # Explicit reload, using the existing discovery path, makes the callback live again.
-        assert call("reloaded")["error"] == (
-            "late result" if callback_kind == "sync" else plugins._PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
-        )
+        assert call("reloaded")["error"] == "late result"
         assert reloaded.calls == ["reloaded"]
-        if callback_kind == "async":
-            assert reloaded.finished.wait(5)
+        assert reloaded.finished.wait(5)
     finally:
         bad.release.set()
         manager.unload()
 
 
 @pytest.mark.parametrize("hook_name", ["pre_tool_call", "post_tool_call", "pre_llm_call"])
-def test_async_timeout_disables_only_the_bad_callback(monkeypatch, hook_name):
+@pytest.mark.parametrize("callback_kind", ["async", "sync", "ignores_cancellation"])
+def test_async_timeout_disables_only_the_bad_callback(monkeypatch, hook_name, callback_kind):
     from hermes_cli.plugins import PluginManager
 
     monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1)
@@ -126,26 +168,52 @@ def test_async_timeout_disables_only_the_bad_callback(monkeypatch, hook_name):
 
     async def scenario():
         cancelled = asyncio.Event()
+        release = asyncio.Event()
+        sync_release = threading.Event()
+        finished = threading.Event()
 
         async def bad(**kwargs):
             calls.append("bad")
             try:
                 await asyncio.sleep(10)
-            finally:
+            except asyncio.CancelledError:
                 cancelled.set()
+                if callback_kind == "ignores_cancellation":
+                    await release.wait()
+                    return "late"
+                raise
+            finally:
+                finished.set()
+
+        def sync_bad(**kwargs):
+            calls.append("bad")
+            try:
+                sync_release.wait(10)
+                return "late"
+            finally:
+                finished.set()
 
         async def good(**kwargs):
             calls.append("good")
             return "healthy"
 
-        manager._hooks[hook_name] = [bad, good]
-        first = await manager.ainvoke_hook(hook_name)
-        assert first[-1] == "healthy"
-        if hook_name == "pre_tool_call":
-            assert first[0]["action"] == "block"
-        await asyncio.wait_for(cancelled.wait(), 5)
-        assert await manager.ainvoke_hook(hook_name) == ["healthy"]
-        assert manager.invoke_hook(hook_name) == ["healthy"]
-        assert calls == ["bad", "good", "good", "good"]
+        manager._hooks[hook_name] = [sync_bad if callback_kind == "sync" else bad, good]
+        try:
+            started = time.monotonic()
+            first = await manager.ainvoke_hook(hook_name)
+            assert time.monotonic() - started < 5
+            assert first[-1] == "healthy"
+            if hook_name == "pre_tool_call":
+                assert first[0]["action"] == "block"
+            if callback_kind != "sync":
+                await asyncio.wait_for(cancelled.wait(), 5)
+            assert await manager.ainvoke_hook(hook_name) == ["healthy"]
+            assert manager.invoke_hook(hook_name) == ["healthy"]
+            assert calls == ["bad", "good", "good", "good"]
+        finally:
+            release.set()
+            sync_release.set()
+            assert await asyncio.to_thread(finished.wait, 5)
+            manager.unload()
 
     asyncio.run(scenario())
