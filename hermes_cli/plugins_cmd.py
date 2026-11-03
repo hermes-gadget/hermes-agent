@@ -959,6 +959,11 @@ def _action_pack(args):
     pack_command(args)
 
 
+def _action_reload(args):
+    from hermes_cli.plugins_cmd_reload import cmd_reload
+    cmd_reload(args)
+
+
 # Tri-state flags: neither --x nor --no-x given == None == interactive prompt.
 _PLUGIN_ACTIONS = {
     "install": lambda args: cmd_install(
@@ -974,6 +979,7 @@ _PLUGIN_ACTIONS = {
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
     "update": lambda args: cmd_update(args.name),
+    "reload": _action_reload,
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),
