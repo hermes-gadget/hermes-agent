@@ -1426,13 +1426,8 @@ class TestForceReloadSymmetry:
         hold.set()
         first.join(5.0)
 
-    def test_hung_worker_caps_new_call_identities_after_suppression(self, monkeypatch, caplog):
-        """Workers abandoned on timeout still occupy their callback: once the suppression window
-        has passed, later calls with fresh ids may start a replacement, but only up to
-        ``_HOOK_MAX_ABANDONED_WORKERS`` live ones — a hung plugin leaks a bounded few threads,
-        never one per call (#98382), and past the cap it is skipped with a warning that names
-        the callback (#105223)."""
-        import hermes_cli.plugins_dispatch as dispatch
+    def test_hung_worker_never_spawns_replacements(self, monkeypatch, caplog):
+        """Quarantine prevents a stuck callback from leaking another thread on later calls."""
 
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
@@ -1447,23 +1442,19 @@ class TestForceReloadSymmetry:
             return "late"
 
         mgr = PluginManager()
-        mgr._hook_timeout_suppression_seconds = 0.0  # isolate the gate from suppression
         mgr._hooks["post_tool_call"] = [blocker]
 
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
-            for i in range(dispatch._HOOK_MAX_ABANDONED_WORKERS + 3):
+            for i in range(10):
                 assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id=f"call-{i}") == []
 
-        assert len(starts) == dispatch._HOOK_MAX_ABANDONED_WORKERS
-        assert "blocker" in caplog.text and "abandoned worker(s) still running" in caplog.text
+        assert len(starts) == 1
+        assert "blocker" in caplog.text and "disabled until plugin reload" in caplog.text
         hold.set()
 
     def test_hung_worker_does_not_fail_closed_forever(self, monkeypatch):
         """One never-returning pre_tool_call guard must not block every later tool call until
-        restart: after the suppression window a fresh call id runs a new worker, so a callback
-        that has recovered decides again (#105223)."""
-        import time
-
+        restart. Later calls skip only that callback, without retrying it (#707)."""
         from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
 
         monkeypatch.setattr(
@@ -1478,27 +1469,29 @@ class TestForceReloadSymmetry:
                 hold.wait(timeout=10.0)  # the first fire hangs for good
 
         mgr = PluginManager()
-        mgr._hook_timeout_suppression_seconds = 0.2
         mgr._hooks["pre_tool_call"] = [guard]
 
         blocked = [{"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}]
         assert mgr.invoke_hook("pre_tool_call", tool_name="read_file", tool_call_id="call-a") == blocked
-        assert mgr.invoke_hook("pre_tool_call", tool_name="read_file", tool_call_id="call-b") == blocked  # in window
-        time.sleep(0.3)  # suppression window passes; the first worker is still hung
+        assert mgr.invoke_hook("pre_tool_call", tool_name="read_file", tool_call_id="call-b") == []
         assert mgr.invoke_hook("pre_tool_call", tool_name="read_file", tool_call_id="call-c") == []
-        assert len(starts) == 2
+        assert len(starts) == 1
         hold.set()
 
-    def test_worker_finishing_at_timeout_does_not_leave_phantom_abandoned_entry(self, monkeypatch):
-        """If the worker completes between the wait expiring and the timeout branch taking the
-        lock, it has already released its token; recording it as abandoned anyway would block
-        every later call id for that callback until reload. A fresh call must still run."""
+    @pytest.mark.parametrize("reload_at_deadline", [False, True])
+    def test_worker_finishing_at_timeout_stays_disabled(self, monkeypatch, reload_at_deadline):
+        """Deadline races cannot resurrect a callback or disable its reloaded replacement."""
         import hermes_cli.plugins_dispatch as dispatch
 
         class _RacingEvent(threading.Event):
             def wait(self, timeout=None):
-                super().wait(timeout=10.0)  # the worker really finishes first...
-                return False  # ...but the caller observes a timeout
+                finished = super().wait(timeout=10.0)
+                if len(starts) == 1:
+                    if reload_at_deadline:
+                        mgr.unload()
+                        mgr._hooks["post_tool_call"] = [quick]
+                    return False  # the worker finished, but the caller observes its deadline
+                return finished
 
         class _Threading:
             Event = _RacingEvent
@@ -1517,14 +1510,13 @@ class TestForceReloadSymmetry:
             return "done"
 
         mgr = PluginManager()
-        mgr._hook_timeout_suppression_seconds = 0.0  # isolate the gate from suppression
         mgr._hooks["post_tool_call"] = [quick]
 
         assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-a") == []
-        assert mgr._hook_abandoned == {}
-        mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-b")
-
-        assert len(starts) == 2
+        assert mgr._hook_running_callbacks == {}
+        result = mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-b")
+        assert result == (["done"] if reload_at_deadline else [])
+        assert len(starts) == (2 if reload_at_deadline else 1)
 
     def test_pre_tool_call_timeout_fail_closed(self, monkeypatch):
         """Timed-out pre_tool_call must return a block directive, not allow."""
@@ -1558,9 +1550,9 @@ class TestForceReloadSymmetry:
         assert msg == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
         assert elapsed < 5.0
 
-        # Still-running / suppression window must also fail closed.
+        # The timed-out callback stays disabled; later tool calls are not poisoned.
         msg2 = resolve_pre_tool_block("web_search", {"query": "y"})
-        assert msg2 == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+        assert msg2 is None
         hold.set()
 
     def test_pre_tool_call_worker_start_failure_fails_closed_without_sticking(
