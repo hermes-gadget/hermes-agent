@@ -81,7 +81,7 @@ def _admitted(source: Path, *, new: bool) -> bool:
 
 class PluginSelection:
     def __init__(self, selection: dict):
-        from hermes_yaml import roundtrip_yaml
+        from hermes_yaml import roundtrip_yaml_for
         from pm.plugin_eviction import settle_record
 
         self.configs = selection_snapshot()
@@ -94,8 +94,9 @@ class PluginSelection:
         actual = hashlib.sha256(self.previous).hexdigest() if self.previous is not None else "missing"
         if expected is not None and expected != actual:
             raise ValueError("Plugin configuration changed since this selection was read; retry.")
-        yaml = roundtrip_yaml()
-        config = yaml.load(self.previous.decode("utf-8-sig")) if self.previous else {}
+        text = self.previous.decode("utf-8-sig") if self.previous else ""
+        yaml = roundtrip_yaml_for(text)
+        config = yaml.load(text) if text else {}
         if config is None:
             config = {}
         if not isinstance(config, dict):

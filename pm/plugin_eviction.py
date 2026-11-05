@@ -192,7 +192,7 @@ class PluginEviction:
 
     def __init__(self, entries: list[Entry], reasons: dict[Path, str], rejoined: list[Entry] = (), *,
                  tried: dict[Path, str] | None = None, configs=None):
-        from hermes_yaml import roundtrip_yaml
+        from hermes_yaml import roundtrip_yaml_for
         from pm.publication import selection_snapshot
 
         # The snapshot the update decided from: a user edit since then refuses publication.
@@ -208,8 +208,9 @@ class PluginEviction:
         for home, changes in by_home.items():
             path = home / "config.yaml"
             previous = read_bytes_or_none(path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
-            yaml = roundtrip_yaml()
-            config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
+            text = previous.decode("utf-8-sig") if previous else ""
+            yaml = roundtrip_yaml_for(text)
+            config = (yaml.load(text) if text else None) or {}
             # read_home_selection already proved plugins is a mapping and the lists are lists.
             plugins = config.get("plugins")
             if plugins is None:
