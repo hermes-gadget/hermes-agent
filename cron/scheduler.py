@@ -463,6 +463,24 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     return result
 
 
+def _cron_mcp_allowed_names(job: dict, cfg: dict) -> list[str] | None:
+    """MCP servers this cron job may spawn.
+
+    ``None`` preserves the historical behaviour for jobs without a per-job
+    toolset list (every enabled server). A job with ``enabled_toolsets`` gets
+    the same MCP merge the agent uses, so ``no_mcp`` really means no MCP
+    process is spawned — before this, discovery ignored the sentinel and every
+    job cold-started all configured servers.
+    """
+    if not job.get("enabled_toolsets") or not isinstance(cfg, dict):
+        return None
+    merged = _merge_mcp_into_per_job_toolsets(list(job["enabled_toolsets"]), cfg)
+    from hermes_cli.tools_config import enabled_mcp_server_names
+
+    mcp_names = enabled_mcp_server_names(cfg)
+    return [name for name in merged if name in mcp_names]
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
     """Toolset list for a cron job. Precedence: per-job ``enabled_toolsets`` (+ MCP merge) >
     ``cron`` platform config (``_get_platform_tools``, which strips _DEFAULT_OFF_TOOLSETS so fresh
@@ -1827,9 +1845,12 @@ def _load_credential_pool(runtime: dict, job_id: str):
     return None
 
 
-def _init_cron_mcp_tools(job_id: str) -> None:
+def _init_cron_mcp_tools(job_id: str, allowed_mcp_names: list[str] | None = None) -> None:
     """Register MCP servers for the agent's tool registry. Idempotent across ticks; non-fatal so a
-    broken MCP server never kills a working job."""
+    broken MCP server never kills a working job.
+
+    ``allowed_mcp_names`` is the job's resolved server allowlist (``None`` = every
+    configured server, the historical behaviour)."""
     try:
         # Initialize MCP servers so configured mcp_servers are available to the agent's tool registry before
         # AIAgent is constructed. Without this, cron jobs never saw any MCP tools — only the gateway / CLI
@@ -1837,7 +1858,7 @@ def _init_cron_mcp_tools(job_id: str) -> None:
         # already-connected servers inside register_mcp_servers(). Non-fatal on failure: a broken MCP server
         # shouldn't kill an otherwise-working cron job. See #4219.
         from tools.mcp_tool_discovery import discover_mcp_tools
-        _mcp_tools = discover_mcp_tools()
+        _mcp_tools = discover_mcp_tools(allowed_mcp_names=allowed_mcp_names)
         if _mcp_tools:
             logger.info("Job '%s': %d MCP tool(s) available", job_id, len(_mcp_tools))
     except Exception as _mcp_exc:
@@ -2469,7 +2490,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.fallback_model = _job_fallback_chain(job, _cfg)
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
-    _init_cron_mcp_tools(job_id)
+    _init_cron_mcp_tools(job_id, _cron_mcp_allowed_names(job, _cfg))
     # Only now can a requested MCP toolset be judged: its alias is process-global but its tools live
     # in this profile's registry overlay, and quiet_mode hides the empty resolution (#109050).
     if _cron_preflight_enabled(_cfg):

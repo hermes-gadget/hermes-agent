@@ -14,6 +14,7 @@ import pytest
 from cron.scheduler import (
     SILENT_MARKER,
     _build_job_prompt,
+    _cron_mcp_allowed_names,
     _deliver_result,
     _merge_mcp_into_per_job_toolsets,
     _run_cron_cleanup_with_timeout,
@@ -161,6 +162,17 @@ class TestPerJobToolsetMcpMerge:
         result = _merge_mcp_into_per_job_toolsets(["web", "no_mcp"], self.CFG)
         assert result == ["web"]
         assert not (set(result) & self._enabled_names())
+
+    def test_mcp_spawn_allowlist_honours_no_mcp(self):
+        job = {"enabled_toolsets": ["web", "no_mcp"]}
+        assert _cron_mcp_allowed_names(job, self.CFG) == []
+
+    def test_mcp_spawn_allowlist_names_only_requested_servers(self):
+        job = {"enabled_toolsets": ["web", "finnhub"]}
+        assert _cron_mcp_allowed_names(job, self.CFG) == ["finnhub"]
+
+    def test_mcp_spawn_allowlist_preserves_unfiltered_default(self):
+        assert _cron_mcp_allowed_names({"prompt": "x"}, self.CFG) is None
 
     def test_resolver_keeps_memory_in_per_job_list(self):
         result = _resolve_cron_enabled_toolsets(
