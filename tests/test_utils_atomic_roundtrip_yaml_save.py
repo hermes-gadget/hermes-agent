@@ -288,3 +288,51 @@ class TestAtomicRoundtripYamlSave:
         atomic_roundtrip_yaml_save(config_path, {"model": {"default": "updated-model"}})
 
         assert chown_calls == [(config_path, 345, 678)]
+
+    def test_save_changes_only_the_target_line_in_a_folded_120_document(self, config_path):
+        """A one-scalar save must not reflow a document authored at width 120.
+
+        The writer used to impose one global width/indent (no fold, 4/2 sequences), so a
+        ``plugins.enabled`` edit reflowed every long scalar in the file (~988 lines on the real
+        config.yaml). The emitter settings now come from the document itself; every line other
+        than the edited one must come back byte-identical.
+        """
+        import io
+
+        from ruamel.yaml import YAML
+
+        from utils import atomic_roundtrip_yaml_save
+
+        authored = YAML(typ="rt")
+        authored.width = 120
+        authored.preserve_quotes = True
+        authored.allow_unicode = True
+        authored.default_flow_style = False
+        authored.indent(mapping=2, sequence=2, offset=0)
+        document = {
+            "personalities": {
+                "kawaii": "You are a kawaii assistant. Use cute expressions like (◕‿◕), ★, ♪, "
+                          "and ~! Add sparkles and be super enthusiastic about everything. Every "
+                          "response should feel warm and adorable desu~! ヽ(>∀<☆)ノ"
+            },
+            "plugins": {"enabled": ["argus-dashboard", "delete-guard"]},
+            "display": {"compact": False},
+        }
+        buf = io.StringIO()
+        authored.dump(document, buf)
+        original = buf.getvalue()
+        config_path.write_text(original, encoding="utf-8")
+        # The fixture really is the style under test: a folded scalar and zero-indent sequences.
+        assert "super \n    enthusiastic" in original
+        assert "\n  - argus-dashboard\n" in original
+
+        atomic_roundtrip_yaml_save(
+            config_path,
+            {**document, "display": {"compact": True}},
+        )
+
+        after = config_path.read_text(encoding="utf-8").splitlines()
+        before = original.splitlines()
+        assert len(after) == len(before), "\n".join(after)
+        differing = [(i, b, a) for i, (b, a) in enumerate(zip(before, after)) if a != b]
+        assert differing == [(before.index("  compact: false"), "  compact: false", "  compact: true")]

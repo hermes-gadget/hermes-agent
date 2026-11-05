@@ -78,7 +78,7 @@ class PluginEviction:
     """Config edits disabling the plugins in *reasons*; published like a plugin selection."""
 
     def __init__(self, entries: list[Entry], reasons: dict[Path, str]):
-        from hermes_yaml import roundtrip_yaml
+        from hermes_yaml import roundtrip_yaml_for
         from pm.publication import selection_snapshot
 
         self.configs = selection_snapshot()
@@ -90,8 +90,9 @@ class PluginEviction:
         for home, names in by_home.items():
             path = home / "config.yaml"
             previous = read_bytes_or_none(path)
-            yaml = roundtrip_yaml()
-            config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
+            text = previous.decode("utf-8-sig") if previous else ""
+            yaml = roundtrip_yaml_for(text)
+            config = (yaml.load(text) if text else None) or {}
             # read_home_selection already proved plugins/memory are mappings and the lists are lists.
             plugins = config.get("plugins")
             if plugins is None:

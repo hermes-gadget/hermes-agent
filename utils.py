@@ -413,13 +413,22 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
 
 
-def _roundtrip_load(path: Path):
-    """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
-    indents, plus *path* loaded through it (empty map when missing/blank)."""
+def _roundtrip_load(path: Path, text: str | None = None):
+    """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode, the
+    document's authored width/sequence indent, plus *path* loaded through it (empty map when
+    missing/blank).
+
+    *text* is the file's already-read content when the caller has it (a config save reads the
+    document once for both its create check and this load); otherwise it is read here.
+    """
     from ruamel.yaml.comments import CommentedMap
 
-    yaml_rt = yaml.roundtrip_yaml()
-    data = yaml_rt.load(path.read_text(encoding="utf-8")) if path.exists() else None
+    if text is None:
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+    # Probe the document's own emitter settings so a no-op re-dump is byte-identical: a fixed
+    # width/indent reflows every long scalar it did not touch (~988 lines on the real config).
+    yaml_rt = yaml.roundtrip_yaml_for(text) if text.strip() else yaml.roundtrip_yaml()
+    data = yaml_rt.load(text) if text else None
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
@@ -522,8 +531,10 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
 
     mkdir_under_hermes_home(path.parent)
     require_readable_config_before_write(path)
-    creating = not path.exists() or not path.read_text(encoding="utf-8").strip()
-    yaml_rt, existing = _roundtrip_load(path)
+    # One read for the create check and the load: the style probe needs the document itself.
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    creating = not text.strip()
+    yaml_rt, existing = _roundtrip_load(path, text)
 
     def _unchanged(current: Any, value: Any) -> bool:
         # ``True == 1`` in Python; a bool↔int flip is a real change for YAML readers.

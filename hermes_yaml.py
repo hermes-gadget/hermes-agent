@@ -86,13 +86,79 @@ def safe_dump(
 ROUNDTRIP_YAML_WIDTH = 2**31 - 1
 
 
-def roundtrip_yaml() -> YAML:
-    """Create a fresh comment/quote-preserving editor for user-authored YAML."""
+def _editor(width: int, sequence: int, offset: int) -> YAML:
+    """A fresh round-trip editor emitting at *width* with the given sequence indent."""
     yaml = YAML(typ="rt")
-    yaml.width = ROUNDTRIP_YAML_WIDTH
+    yaml.width = width
     yaml.Resolver = _Yaml11Resolver
     yaml.preserve_quotes = True
     yaml.allow_unicode = True
     yaml.default_flow_style = False
-    yaml.indent(mapping=2, sequence=4, offset=2)
+    yaml.indent(mapping=2, sequence=sequence, offset=offset)
     return yaml
+
+
+def _dump(editor: YAML, data: Any) -> str:
+    out = StringIO()
+    editor.dump(data, out)
+    return out.getvalue()
+
+
+def roundtrip_yaml() -> YAML:
+    """Create a fresh comment/quote-preserving editor for user-authored YAML."""
+    return _editor(ROUNDTRIP_YAML_WIDTH, 4, 2)
+
+
+# The emitter settings a config in the wild may have been authored with. ruamel cannot restore a
+# multi-line plain scalar's fold points once loaded, so any fixed width reflows every long value
+# it did not touch (a one-item ``plugins.enabled`` edit rewrote ~988 lines of a 120-column config).
+# Probing these candidates against the document itself finds the settings that reproduce it.
+# Indent first: the previous hard-coded 4/2 is tried before the authored zero-indent style, so a
+# file this writer produced matches on the first candidate instead of the last.
+_CANDIDATE_WIDTHS = (120, 100, 80, 132, 160, 2**31 - 1)
+_CANDIDATE_INDENTS = ((4, 2), (2, 0), (2, 2))
+
+
+def _candidate_widths(text: str) -> tuple[int, ...]:
+    """Widths worth probing, widest-that-still-fits first.
+
+    Every width at or above the document's longest line folds identically (nothing exceeds the
+    limit), so one representative replaces the whole tail; the narrower widths can still reflow
+    and are probed after it. Without this a 1,800-line config cost eighteen parse/dump passes
+    whenever it matched a late candidate.
+    """
+    longest = max((len(line) for line in text.splitlines()), default=0)
+    fitting = [w for w in _CANDIDATE_WIDTHS if w >= longest]
+    wide = min(fitting) if fitting else max(_CANDIDATE_WIDTHS)
+    return (wide, *(w for w in _CANDIDATE_WIDTHS if w < longest))
+
+
+def roundtrip_yaml_for(text: str) -> YAML:
+    """Editor whose no-op dump best reproduces *text* (byte-identical when possible).
+
+    ruamel cannot restore a multi-line plain scalar's fold points, so a fixed emitter
+    setting reflows every long value it did not touch. Probe the document's own style
+    once, then hand back the editor that reproduces it; fall back to the existing
+    no-fold/4-2 settings when nothing matches (previous behaviour, never worse).
+    """
+    if not text.strip():
+        return roundtrip_yaml()
+    best: tuple[int, tuple[int, int, int]] | None = None
+    lines = text.splitlines()
+    for width in _candidate_widths(text):
+        for sequence, offset in _CANDIDATE_INDENTS:
+            settings = (width, sequence, offset)
+            try:
+                editor = _editor(*settings)
+                rendered = _dump(editor, editor.load(text))
+            except Exception:
+                continue
+            if rendered == text:
+                return _editor(*settings)
+            rendered_lines = rendered.splitlines()
+            changed = sum(
+                1 for a, b in zip(lines, rendered_lines) if a != b
+            ) + abs(len(lines) - len(rendered_lines))
+            if best is None or changed < best[0]:
+                best = (changed, settings)
+    return _editor(*best[1]) if best else roundtrip_yaml()
