@@ -1,0 +1,23 @@
+[package]
+name = "hermes-matrix-call"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+
+# scripts/build_matrix_call.py builds this crate inside the pinned, patched
+# matrix-rust-rtc workspace, sharing its single SDK revision and lockfile.
+[dependencies]
+matrix-sdk.workspace = true
+matrix-sdk-ui.workspace = true
+matrix-rtc-call-sdk = { path = "../crates/matrix-rtc-call-sdk", features = ["matrix-sdk"] }
+matrix-rtc-call = { path = "../crates/matrix-rtc-call" }
+matrix-rtc-core = { path = "../crates/matrix-rtc-core" }
+matrix-rtc-transport = { path = "../crates/matrix-rtc-transport" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }
+futures-util = "0.3"
+rustls = "0.23"
+rand = "0.9"
+

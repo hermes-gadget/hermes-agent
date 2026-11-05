@@ -77,6 +77,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.adapter_live import MatrixLiveMixin
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -820,7 +821,7 @@ class _CryptoStateStore:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(MatrixLiveMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -925,6 +926,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
                 logger.warning("Matrix: ignoring invalid MATRIX_IGNORE_USER_PATTERNS entry %r: %s", pattern, exc)
+        self._init_matrix_live()
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -1372,9 +1374,13 @@ class MatrixAdapter(BasePlatformAdapter):
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
         self._wire_plugin_handlers(self._client)  # plugin-registered native handlers
+        await self._connect_matrix_live()
+        await self.start_live_assistant_observer()
         return True
 
     async def disconnect(self) -> None:
+        await self._disconnect_matrix_live()
+        await self.stop_live_assistant_observer()
         self._closing = True
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
@@ -1405,6 +1411,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        self._gpt_live_tap_reply(chat_id, content, metadata)
         if not content:
             return SendResult(success=True)
         last_event_id = None
@@ -1461,6 +1468,7 @@ class MatrixAdapter(BasePlatformAdapter):
         device_id = self._device_id or getattr(self._client, "device_id", "") or ""
         return {
             "platform": "matrix", "homeserver": self._homeserver,
+            "live_voice": self.matrix_live_diagnostics(),
             "auth": {
                 "access_token_present": token_present, "password_present": bool(self._password),
                 "token_preview": "***" if token_present else "", "user_id": user_id,
@@ -2455,6 +2463,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        await super().on_processing_complete(event, outcome)
         msg_id, room_id = event.message_id, event.source.chat_id
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
             return
@@ -3215,6 +3224,14 @@ def _is_connected(config) -> bool:
 
 
 def register(ctx) -> None:
+    from plugins.platforms.live_voice.agent_status import observe_agent_tool, observe_agent_lifecycle
+    from plugins.platforms.live_voice.coordination import enforce_voice_coordination
+    ctx.register_hook('pre_tool_call', observe_agent_tool)
+    ctx.register_hook('pre_tool_call', enforce_voice_coordination)
+    from plugins.platforms.live_voice.observer import observe_native_child
+    ctx.register_hook('subagent_stop', observe_native_child)
+    ctx.register_hook('subagent_start', observe_agent_lifecycle)
+    ctx.register_hook('subagent_stop', observe_agent_lifecycle)
     ctx.register_platform(
         name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,
         ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,

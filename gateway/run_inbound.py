@@ -774,7 +774,8 @@ class GatewayInboundMixin:
         if _handled:
             return _result
 
-        effective_busy_input_mode = self._effective_busy_input_mode(source)
+        queue_only = getattr(event, "queue_only", False) is True
+        effective_busy_input_mode = "queue" if queue_only else self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None
 
@@ -785,7 +786,10 @@ class GatewayInboundMixin:
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply(t("gateway.stop.force_stopped_pending"))
-            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
+            if queue_only:
+                self._queue_or_replace_pending_event(_quick_key, event)
+            else:
+                self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
@@ -1029,6 +1033,8 @@ class GatewayInboundMixin:
         return self._hm_send_payload_as_turn(event, t("gateway.queue.usage"))
 
     async def _hm_cmd_steer(self, event, source, _quick_key):
+        from gateway.control_target import validate_execution
+        validate_execution(event, self)
         return self._hm_send_payload_as_turn(event, t("gateway.steer.usage_idle"))
 
     @staticmethod
@@ -1358,6 +1364,8 @@ class GatewayInboundMixin:
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
+        from gateway.control_target import validate_execution
+        validate_execution(event, self)
         if not is_internal:
             from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
             record_gateway_slash_command(event)
@@ -1425,6 +1433,7 @@ class GatewayInboundMixin:
         start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        event._execution_generation = _run_generation
 
         try:
             try:

@@ -428,10 +428,14 @@ class GatewaySlashCommandsMixin(
         session_key = session_entry.session_key
 
         async def _stop(key: str, invalidation_reason: str) -> None:
+            from gateway.control_target import validate_execution
+            validate_execution(event, self)
             await self._interrupt_and_clear_session(
                 key, source, interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason=invalidation_reason)
         agent = self._running_agents.get(session_key)
+        from gateway.control_target import validate_execution
+        validate_execution(event, self)
         if agent is _AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
             await _stop(session_key, "stop_command_pending")
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)

@@ -92,9 +92,17 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Independent work must wait for its own turn rather than steering or
+    # interrupting the active task. Authorization and control-command handling
+    # still apply; this only overrides busy admission for this one event.
+    queue_only: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # In-process authority only; never reconstructed from ingress metadata.
+    _execution_target: Any = field(default=None, init=False, repr=False, compare=False)
+    _execution_generation: Optional[int] = field(default=None, init=False, repr=False, compare=False)
+    _completed_response: str = field(default="", init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 

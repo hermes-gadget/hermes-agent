@@ -710,7 +710,7 @@ class VoiceReceiver:
 
     def __init__(self, voice_client, allowed_user_ids: set = None, *, stream_callback=None,
                  stream_user_ids=None, utterance_capture=True, speech_onset_callback=None,
-                 min_speech_ms=200):
+                 min_speech_ms=200, decode_failure_callback=None):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
@@ -734,6 +734,10 @@ class VoiceReceiver:
         self._min_speech_seconds = min_speech_ms / 1000
         self._stream_speech = {}
         self._stream_stats = defaultdict(int)
+        self._decode_failure_callback = decode_failure_callback
+        self._decode_failure_since = None
+        self._decode_failure_count = 0
+        self._decode_failure_reported = False
 
     # --- Lifecycle ---
 
@@ -746,7 +750,7 @@ class VoiceReceiver:
         self._install_speaking_hook(conn)
         conn.add_socket_listener(self._on_packet)
         self._running = True
-        logger.info("VoiceReceiver started (bot_ssrc=%d)", self._bot_ssrc)
+        logger.info("VoiceReceiver started (bot_ssrc=%d mode=%s)", self._bot_ssrc, conn.mode)
 
     def stop(self):
         """Stop listening and clean up."""
@@ -770,6 +774,18 @@ class VoiceReceiver:
             if self._stream_stats[stage] == 1:
                 logger.warning("GPT-Live microphone decode failed (stage=%s type=%s)",
                                stage, type(error).__name__)
+        if self._decode_failure_callback and not self._decode_failure_reported:
+            now = time.monotonic()
+            if self._decode_failure_since is None:
+                self._decode_failure_since = now
+            self._decode_failure_count += 1
+            # Only packets for mapped, allowlisted speakers reach this point
+            # in live mode. Silence and isolated transition losses cannot trigger
+            # recovery; a sustained undecodable stream can.
+            if self._decode_failure_count >= 50 and now - self._decode_failure_since >= 2:
+                self._decode_failure_reported = True
+                logger.warning("GPT-Live microphone remained undecodable; requesting voice reconnect")
+                self._decode_failure_callback()
 
     def pause(self):
         self._paused = True
@@ -830,7 +846,7 @@ class VoiceReceiver:
             return
         first_byte = data[0]
         _, _, seq, timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
-        if ssrc == self._bot_ssrc:
+        if ssrc == self._vc._connection.ssrc:
             return
         if self._stream_callback:
             # Never infer an unknown SSRC from the allowlist: another member's
@@ -871,10 +887,24 @@ class VoiceReceiver:
         encrypted = bytes(payload_with_nonce[:-4])
         try:
             import nacl.secret  # noqa: E402 — delayed import, only in voice path
+            # discord.py can replace the transport key and DAVE session after
+            # the receiver starts (a fresh session description / reconnect).
+            # Never keep decrypting with the original connection's snapshot.
+            conn = self._vc._connection
+            key = bytes(conn.secret_key)
+            if key != self._secret_key:
+                self._secret_key = key
+                self._decoders.clear()
+                self._stream_stats["key_updates"] += 1
+                logger.info("VoiceReceiver refreshed Discord transport key")
             box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
             self._stream_decode_failure("transport_errors", e)
+            if self._stream_stats["transport_errors"] == 1:
+                logger.warning("Discord receive transport metadata (mode=%s flags=%02x header=%d extension_bytes=%d)",
+                               getattr(self._vc._connection, "mode", "unknown"),
+                               first_byte, header_size, ext_data_len)
             if self._packet_debug_count <= 10:
                 logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, header_size, len(encrypted))
             return
@@ -899,6 +929,7 @@ class VoiceReceiver:
             if not decrypted:
                 return
         # --- DAVE E2EE decrypt ---
+        self._dave_session = self._vc._connection.dave_session
         if self._dave_session:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
@@ -927,6 +958,8 @@ class VoiceReceiver:
             logger.debug("Opus decode error for SSRC %s; reset decoder: %s", ssrc, e)
             return
         self._capture_decoded(ssrc, pcm)
+        self._decode_failure_since = None
+        self._decode_failure_count = 0
 
     def _capture_decoded(self, ssrc, pcm):
         now = time.monotonic()
@@ -1406,6 +1439,7 @@ class DiscordAdapter(DiscordGptLiveMixin, DiscordMediaMixin, BasePlatformAdapter
                     adapter_self._ensure_missed_message_backfill_task()
                 if adapter_self._gpt_live_cfg.enabled:
                     adapter_self._gpt_live_spawn(adapter_self._reconcile_gpt_live())
+                adapter_self._gpt_live_spawn(adapter_self.start_live_assistant_observer())
 
             @self._client.event
             async def on_socket_event_type(event_type: str):
@@ -2031,6 +2065,7 @@ class DiscordAdapter(DiscordGptLiveMixin, DiscordMediaMixin, BasePlatformAdapter
         # Cancel the liveness probe first so it can't fire a spurious fatal/reconnect mid-teardown.
         await self._cancel_liveness_task()
         await self._shutdown_gpt_live()
+        await self.stop_live_assistant_observer()
         # Leave voice *before* cancelling the bot task: VoiceClient.disconnect() needs the main
         # gateway WS (run by the bot task) or it blocks until the timeout.
         for guild_id in list(self._voice_clients.keys()):
@@ -3062,7 +3097,7 @@ class DiscordAdapter(DiscordGptLiveMixin, DiscordMediaMixin, BasePlatformAdapter
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for final reaction and durable state."""
-        self._gpt_live_complete_stream(event)
+        await super().on_processing_complete(event, outcome)
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
         if not self._reactions_enabled():
             return
@@ -3707,10 +3742,13 @@ class DiscordAdapter(DiscordGptLiveMixin, DiscordMediaMixin, BasePlatformAdapter
                 live_kwargs = {}
                 if live_mode:
                     session = self._gpt_live_sessions[guild_id]
+                    loop = asyncio.get_running_loop()
                     live_kwargs = dict(
                         stream_callback=session.feed_user_pcm, stream_user_ids={session.cfg.user_id},
                         utterance_capture=False, speech_onset_callback=session.note_user_speech,
                         min_speech_ms=session.cfg.barge_in_min_speech_ms,
+                        decode_failure_callback=lambda: loop.call_soon_threadsafe(
+                            self._gpt_live_receive_failed, session),
                     )
                 receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids, **live_kwargs)
                 receiver.start()
@@ -5476,14 +5514,14 @@ class DiscordAdapter(DiscordGptLiveMixin, DiscordMediaMixin, BasePlatformAdapter
             pass
         return thread
 
-    async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
+    async def _auto_create_thread(self, message: 'DiscordMessage', *, thread_name: Optional[str] = None) -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
         Primary path and seed-message fallback each retry once after a short backoff (transient errors).
 
         ``Cannot connect to host discord.com:443``) don't immediately burn through to the caller's failure
         path (#20243).
         """
-        thread_name = self._derive_auto_thread_name(message.content or "")
+        thread_name = thread_name or self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
         last_direct_error: Exception | None = None
@@ -7555,6 +7593,14 @@ _is_connected = _env_is_connected("DISCORD_BOT_TOKEN")
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from plugins.platforms.live_voice.agent_status import observe_agent_tool, observe_agent_lifecycle
+    from plugins.platforms.live_voice.coordination import enforce_voice_coordination
+    ctx.register_hook('pre_tool_call', observe_agent_tool)
+    ctx.register_hook('pre_tool_call', enforce_voice_coordination)
+    from plugins.platforms.live_voice.observer import observe_native_child
+    ctx.register_hook('subagent_stop', observe_native_child)
+    ctx.register_hook('subagent_start', observe_agent_lifecycle)
+    ctx.register_hook('subagent_stop', observe_agent_lifecycle)
     ctx.register_platform(
         name="discord",
         label="Discord",

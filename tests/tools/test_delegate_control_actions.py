@@ -124,6 +124,96 @@ def test_list_shows_only_own_children():
 
 
 # ---------------------------------------------------------------------------
+# action='list' activity snapshots
+# ---------------------------------------------------------------------------
+
+
+def test_list_reports_owned_live_activity_outside_registry_lock():
+    from tools.delegate_tool_registry import _active_subagents_lock
+    from tools.registry import registry
+
+    class ActivityChild(_StubChild):
+        def __init__(self, parent, current_tool, api_calls):
+            super().__init__(parent)
+            self.current_tool, self.api_calls = current_tool, api_calls
+            self.samples = 0
+
+        def get_activity_summary(self):
+            self.samples += 1
+            acquired = _active_subagents_lock.acquire(blocking=False)
+            assert acquired, "Sampling must not hold the live registry lock"
+            _active_subagents_lock.release()
+            return {"current_tool": self.current_tool, "api_call_count": self.api_calls,
+                    "last_activity_desc": "private activity detail", "args": {"secret": "private argument"}}
+
+    parent, other_parent = _StubParent(), _StubParent()
+    mine = ActivityChild(parent, "web_search", 4)
+    grandchild = ActivityChild(mine, None, 7)
+    foreign = ActivityChild(other_parent, "terminal", 99)
+    rows = [
+        ("sid-list-live", mine, {"delegation_id": "deleg-live", "tool_count": 3, "last_tool": "terminal"}),
+        ("sid-list-descendant", grandchild, {"parent_id": "sid-list-live", "tool_count": 5}),
+        ("sid-list-foreign", foreign, {}),
+    ]
+    for sid, child, fields in rows:
+        _register(sid, child, **fields)
+    try:
+        raw = registry.dispatch("delegate_task", {"action": "list"}, parent_agent=parent)
+        entries = {entry["subagent_id"]: entry for entry in json.loads(raw)["subagents"]}
+        assert set(entries) == {"sid-list-live", "sid-list-descendant"}
+        assert entries["sid-list-live"]["current_tool"] == "web_search"
+        assert entries["sid-list-live"]["last_tool"] == "terminal"
+        assert entries["sid-list-live"]["api_calls"] == 4
+        assert entries["sid-list-live"]["tool_count"] == 3
+        assert entries["sid-list-live"]["delegation_id"] == "deleg-live"
+        assert entries["sid-list-descendant"]["current_tool"] is None
+        assert entries["sid-list-descendant"]["api_calls"] == 7
+        assert mine.samples == grandchild.samples == 1 and foreign.samples == 0
+        assert "private activity detail" not in raw and "private argument" not in raw
+    finally:
+        for sid, _child, _fields in rows:
+            _unregister_subagent(sid)
+
+
+def test_list_keeps_owned_rows_when_activity_is_broken_or_malformed(caplog):
+    from tools.registry import registry
+
+    secret = "sensitive-summary-detail"
+
+    class BrokenChild(_StubChild):
+        def get_activity_summary(self):
+            raise RuntimeError(secret)
+
+    class MalformedChild(_StubChild):
+        def get_activity_summary(self):
+            return {"current_tool": {"detail": secret}, "api_call_count": True,
+                    "last_activity_desc": secret, "error": secret}
+
+    parent = _StubParent()
+    rows = [
+        ("sid-list-broken", BrokenChild(parent), {"tool_count": 2, "last_tool": "terminal"}),
+        ("sid-list-malformed", MalformedChild(parent), {
+            "tool_count": True, "last_tool": [secret], "delegation_id": {"detail": secret}}),
+    ]
+    for sid, child, fields in rows:
+        _register(sid, child, **fields)
+    try:
+        raw = registry.dispatch("delegate_task", {"action": "list"}, parent_agent=parent)
+        entries = {entry["subagent_id"]: entry for entry in json.loads(raw)["subagents"]}
+        assert set(entries) == {"sid-list-broken", "sid-list-malformed"}
+        assert entries["sid-list-broken"]["tool_count"] == 2
+        assert entries["sid-list-broken"]["last_tool"] == "terminal"
+        for entry in entries.values():
+            assert entry["status"] == "running"
+            assert "current_tool" not in entry and "api_calls" not in entry
+        assert not {"tool_count", "last_tool", "delegation_id"} & entries["sid-list-malformed"].keys()
+        assert secret not in raw and secret not in caplog.text
+    finally:
+        for sid, _child, _fields in rows:
+            _unregister_subagent(sid)
+
+
+# ---------------------------------------------------------------------------
 # action='steer'
 # ---------------------------------------------------------------------------
 

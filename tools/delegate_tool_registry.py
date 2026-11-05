@@ -236,14 +236,15 @@ def _owns_subagent_record(record: Dict[str, Any], parent_agent: Any) -> bool:
 
 def _list_payload(parent_agent: Any) -> Dict[str, Any]:
     with _active_subagents_lock:
-        records = list(_active_subagents.values())
+        records = [dict(record) for record in _active_subagents.values()]
     entries = []
     for r in records:
         if not _owns_subagent_record(r, parent_agent):
             continue
         started = r.get("started_at")
-        entries.append({
+        entry = {
             "subagent_id": r.get("subagent_id"),
+            "child_session_id": str(getattr(r.get("agent"), "session_id", "") or ""),
             "parent_id": r.get("parent_id"),
             "goal": r.get("goal"),
             "model": r.get("model"),
@@ -251,7 +252,30 @@ def _list_payload(parent_agent: Any) -> Dict[str, Any]:
             "running_seconds": round(time.time() - started, 1) if isinstance(started, (int, float)) else None,
             "accepting_steer": bool(r.get("accepting_steer", False)),
             "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
-        })
+        }
+        for key in ("delegation_id", "last_tool"):
+            value = r.get(key)
+            if isinstance(value, str):
+                entry[key] = value
+        count = r.get("tool_count")
+        if type(count) is int and count >= 0:
+            entry["tool_count"] = count
+        # Sample only owned children, outside the registry lock. Activity is
+        # observational: a broken sampler must not hide the child or expose
+        # its exception, descriptions, tool arguments, or other private fields.
+        activity = None
+        try:
+            activity = r.get("agent").get_activity_summary()
+        except Exception:
+            pass
+        if isinstance(activity, dict):
+            current_tool = activity.get("current_tool")
+            if "current_tool" in activity and (current_tool is None or isinstance(current_tool, str)):
+                entry["current_tool"] = current_tool
+            api_calls = activity.get("api_call_count")
+            if type(api_calls) is int and api_calls >= 0:
+                entry["api_calls"] = api_calls
+        entries.append(entry)
     payload: Dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
     if not entries:
         payload["note"] = (

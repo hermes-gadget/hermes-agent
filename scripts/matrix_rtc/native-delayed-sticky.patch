@@ -1,0 +1,559 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 46ad19a..5e897ef 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -133,10 +133,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+ 
+ [[package]]
+-name = "anymap2"
+-version = "0.13.0"
++name = "anymap3"
++version = "1.1.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d301b3b94cb4b2f23d7917810addbbaff90738e0ca2be692bd027e70d7e0330c"
++checksum = "fb5dfbc6d8d2675589ccbe4d0fd61df2419075625f8c1a62325e718e2b0049f9"
+ 
+ [[package]]
+ name = "archery"
+@@ -1120,6 +1120,16 @@ dependencies = [
+  "syn 3.0.6",
+ ]
+ 
++[[package]]
++name = "der"
++version = "0.8.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6a996a108feb8b427a6e12fcf6af4aa83409b79d72c15337d7741368131ee004"
++dependencies = [
++ "const-oid",
++ "zeroize",
++]
++
+ [[package]]
+ name = "deranged"
+ version = "0.5.8"
+@@ -1249,6 +1259,7 @@ version = "3.0.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "29fcf32e6c73d1079f83ab4d782de2d81620346a5f38c6237a86a22f8368980a"
+ dependencies = [
++ "pkcs8",
+  "serdect",
+  "signature",
+ ]
+@@ -1312,7 +1323,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+ dependencies = [
+  "libc",
+- "windows-sys 0.61.2",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -1844,6 +1855,15 @@ dependencies = [
+  "itoa",
+ ]
+ 
++[[package]]
++name = "http-auth"
++version = "0.1.10"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "150fa4a9462ef926824cf4519c84ed652ca8f4fbae34cb8af045b5cbcaf98822"
++dependencies = [
++ "memchr",
++]
++
+ [[package]]
+ name = "http-body"
+ version = "1.1.0"
+@@ -2166,15 +2186,6 @@ version = "1.70.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+ 
+-[[package]]
+-name = "itertools"
+-version = "0.12.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+-dependencies = [
+- "either",
+-]
+-
+ [[package]]
+ name = "itertools"
+ version = "0.14.0"
+@@ -2927,16 +2938,15 @@ dependencies = [
+ [[package]]
+ name = "matrix-sdk"
+ version = "0.19.1"
+-source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=c6ad52ecc09eaa36601f55effb0a48a533eb87dd#c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
++source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=f076a9de6f59b43509d0cbbd4b1077c5c58d2c22#f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
+ dependencies = [
+- "anymap2",
++ "anymap3",
+  "as_variant",
+  "async-stream",
+  "async-trait",
+  "backon",
+  "bytes",
+  "bytesize",
+- "cfg-if",
+  "event-listener",
+  "eyeball",
+  "eyeball-im",
+@@ -2961,6 +2971,7 @@ dependencies = [
+  "oauth2-reqwest",
+  "percent-encoding",
+  "pin-project-lite",
++ "regex",
+  "reqwest 0.13.5",
+  "ruma",
+  "serde",
+@@ -2983,7 +2994,7 @@ dependencies = [
+ [[package]]
+ name = "matrix-sdk-base"
+ version = "0.19.1"
+-source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=c6ad52ecc09eaa36601f55effb0a48a533eb87dd#c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
++source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=f076a9de6f59b43509d0cbbd4b1077c5c58d2c22#f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
+ dependencies = [
+  "as_variant",
+  "assert_matches",
+@@ -3007,6 +3018,7 @@ dependencies = [
+  "strass",
+  "thiserror 2.0.21",
+  "tokio",
++ "tokio-util",
+  "tracing",
+  "unicode-normalization",
+ ]
+@@ -3014,7 +3026,7 @@ dependencies = [
+ [[package]]
+ name = "matrix-sdk-common"
+ version = "0.19.1"
+-source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=c6ad52ecc09eaa36601f55effb0a48a533eb87dd#c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
++source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=f076a9de6f59b43509d0cbbd4b1077c5c58d2c22#f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
+ dependencies = [
+  "eyeball-im",
+  "futures-core",
+@@ -3037,14 +3049,13 @@ dependencies = [
+ [[package]]
+ name = "matrix-sdk-crypto"
+ version = "0.19.1"
+-source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=c6ad52ecc09eaa36601f55effb0a48a533eb87dd#c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
++source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=f076a9de6f59b43509d0cbbd4b1077c5c58d2c22#f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
+ dependencies = [
+  "aes",
+  "as_variant",
+  "async-trait",
+  "bs58",
+  "byteorder",
+- "cfg-if",
+  "ctr",
+  "eyeball",
+  "futures-core",
+@@ -3077,7 +3088,7 @@ dependencies = [
+ [[package]]
+ name = "matrix-sdk-indexeddb"
+ version = "0.19.1"
+-source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=c6ad52ecc09eaa36601f55effb0a48a533eb87dd#c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
++source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=f076a9de6f59b43509d0cbbd4b1077c5c58d2c22#f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
+ dependencies = [
+  "async-trait",
+  "base64 0.23.1",
+@@ -3109,7 +3120,7 @@ dependencies = [
+ [[package]]
+ name = "matrix-sdk-sqlite"
+ version = "0.19.1"
+-source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=c6ad52ecc09eaa36601f55effb0a48a533eb87dd#c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
++source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=f076a9de6f59b43509d0cbbd4b1077c5c58d2c22#f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
+ dependencies = [
+  "as_variant",
+  "async-trait",
+@@ -3137,7 +3148,7 @@ dependencies = [
+ [[package]]
+ name = "matrix-sdk-store-encryption"
+ version = "0.19.1"
+-source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=c6ad52ecc09eaa36601f55effb0a48a533eb87dd#c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
++source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=f076a9de6f59b43509d0cbbd4b1077c5c58d2c22#f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
+ dependencies = [
+  "base64 0.23.1",
+  "blake3",
+@@ -3159,12 +3170,13 @@ dependencies = [
+ [[package]]
+ name = "matrix-sdk-test"
+ version = "0.19.1"
+-source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=c6ad52ecc09eaa36601f55effb0a48a533eb87dd#c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
++source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=f076a9de6f59b43509d0cbbd4b1077c5c58d2c22#f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
+ dependencies = [
+  "as_variant",
+  "ctor",
+  "getrandom 0.4.3",
+  "http",
++ "indexmap",
+  "insta",
+  "matrix-sdk-common",
+  "matrix-sdk-test-macros",
+@@ -3182,7 +3194,7 @@ dependencies = [
+ [[package]]
+ name = "matrix-sdk-test-macros"
+ version = "0.19.1"
+-source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=c6ad52ecc09eaa36601f55effb0a48a533eb87dd#c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
++source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=f076a9de6f59b43509d0cbbd4b1077c5c58d2c22#f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
+ dependencies = [
+  "quote",
+  "syn 3.0.6",
+@@ -3191,7 +3203,7 @@ dependencies = [
+ [[package]]
+ name = "matrix-sdk-ui"
+ version = "0.19.1"
+-source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=c6ad52ecc09eaa36601f55effb0a48a533eb87dd#c6ad52ecc09eaa36601f55effb0a48a533eb87dd"
++source = "git+https://github.com/matrix-org/matrix-rust-sdk?rev=f076a9de6f59b43509d0cbbd4b1077c5c58d2c22#f076a9de6f59b43509d0cbbd4b1077c5c58d2c22"
+ dependencies = [
+  "as_variant",
+  "async-rx",
+@@ -3360,7 +3372,7 @@ version = "0.50.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -3395,7 +3407,7 @@ version = "5.0.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
+ dependencies = [
+- "base64 0.22.1",
++ "base64 0.21.7",
+  "chrono",
+  "getrandom 0.2.17",
+  "http",
+@@ -3796,6 +3808,16 @@ version = "0.2.17"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+ 
++[[package]]
++name = "pkcs8"
++version = "0.11.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "451913da69c775a56034ea8d9003d27ee8948e12443eae7c038ba100a4f21cb7"
++dependencies = [
++ "der",
++ "spki",
++]
++
+ [[package]]
+ name = "pkg-config"
+ version = "0.3.34"
+@@ -3913,7 +3935,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
+ dependencies = [
+  "heck",
+- "itertools 0.12.1",
++ "itertools 0.14.0",
+  "log",
+  "multimap",
+  "petgraph",
+@@ -3932,7 +3954,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+ dependencies = [
+  "anyhow",
+- "itertools 0.12.1",
++ "itertools 0.14.0",
+  "proc-macro2",
+  "quote",
+  "syn 2.0.119",
+@@ -4007,7 +4029,7 @@ dependencies = [
+  "once_cell",
+  "socket2",
+  "tracing",
+- "windows-sys 0.61.2",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -4308,9 +4330,8 @@ checksum = "fae8ee26b0371a29a77d2b2d6b3ae13aa81def6f9bf1b1b92a32d279a5e709b7"
+ 
+ [[package]]
+ name = "ruma"
+-version = "0.17.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fc484e2676b31e677a3e3646078c01d41529eed3360226804a857db8428cc978"
++version = "0.17.2"
++source = "git+https://github.com/ruma/ruma?rev=f99fc5c53a7ee3057a9203f76a0ad12839d67be6#f99fc5c53a7ee3057a9203f76a0ad12839d67be6"
+ dependencies = [
+  "assign",
+  "js_int",
+@@ -4318,15 +4339,15 @@ dependencies = [
+  "ruma-client-api",
+  "ruma-common",
+  "ruma-events",
++ "ruma-federation-api",
+  "ruma-html",
+  "web-time",
+ ]
+ 
+ [[package]]
+ name = "ruma-client-api"
+-version = "0.25.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6a6187ddda33fefafe3a738f40075ce2e8a7ecd3606998d2a885cf6dac73629d"
++version = "0.25.2"
++source = "git+https://github.com/ruma/ruma?rev=f99fc5c53a7ee3057a9203f76a0ad12839d67be6#f99fc5c53a7ee3057a9203f76a0ad12839d67be6"
+ dependencies = [
+  "as_variant",
+  "assign",
+@@ -4347,9 +4368,8 @@ dependencies = [
+ 
+ [[package]]
+ name = "ruma-common"
+-version = "0.20.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "dfbfb1235d65ebd89e169c67cc120a6608530b3445babb8689baba7ef2e72a12"
++version = "0.20.2"
++source = "git+https://github.com/ruma/ruma?rev=f99fc5c53a7ee3057a9203f76a0ad12839d67be6#f99fc5c53a7ee3057a9203f76a0ad12839d67be6"
+ dependencies = [
+  "as_variant",
+  "base64 0.23.1",
+@@ -4381,9 +4401,8 @@ dependencies = [
+ 
+ [[package]]
+ name = "ruma-events"
+-version = "0.35.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "140e7848282c33721f4bc4f1e5922fa5eb92d3a7b497ec4b71086b047ee7cd0d"
++version = "0.35.2"
++source = "git+https://github.com/ruma/ruma?rev=f99fc5c53a7ee3057a9203f76a0ad12839d67be6#f99fc5c53a7ee3057a9203f76a0ad12839d67be6"
+ dependencies = [
+  "as_variant",
+  "indexmap",
+@@ -4401,11 +4420,28 @@ dependencies = [
+  "zeroize",
+ ]
+ 
++[[package]]
++name = "ruma-federation-api"
++version = "0.16.1"
++source = "git+https://github.com/ruma/ruma?rev=f99fc5c53a7ee3057a9203f76a0ad12839d67be6#f99fc5c53a7ee3057a9203f76a0ad12839d67be6"
++dependencies = [
++ "http",
++ "http-auth",
++ "js_int",
++ "mime",
++ "ruma-common",
++ "ruma-events",
++ "ruma-signatures",
++ "serde",
++ "serde_json",
++ "thiserror 2.0.21",
++ "tracing",
++]
++
+ [[package]]
+ name = "ruma-html"
+ version = "0.9.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9e27e35e6c36fa1abc4def766e474a0f2f709e87f1602d57ec34d41b09253da4"
++source = "git+https://github.com/ruma/ruma?rev=f99fc5c53a7ee3057a9203f76a0ad12839d67be6#f99fc5c53a7ee3057a9203f76a0ad12839d67be6"
+ dependencies = [
+  "as_variant",
+  "html5ever",
+@@ -4415,9 +4451,8 @@ dependencies = [
+ 
+ [[package]]
+ name = "ruma-identifiers-validation"
+-version = "0.12.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9d6cff00317675f487c4e7ccfb18875a14c5a14867b51d13f2a826053f03c432"
++version = "0.14.0"
++source = "git+https://github.com/ruma/ruma?rev=f99fc5c53a7ee3057a9203f76a0ad12839d67be6#f99fc5c53a7ee3057a9203f76a0ad12839d67be6"
+ dependencies = [
+  "js_int",
+  "thiserror 2.0.21",
+@@ -4425,9 +4460,8 @@ dependencies = [
+ 
+ [[package]]
+ name = "ruma-macros"
+-version = "0.20.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d4b8571408bf1aefd0f06ea49e9d19551bcf4ba7388e19848adcd9291547c6cb"
++version = "0.20.2"
++source = "git+https://github.com/ruma/ruma?rev=f99fc5c53a7ee3057a9203f76a0ad12839d67be6#f99fc5c53a7ee3057a9203f76a0ad12839d67be6"
+ dependencies = [
+  "as_variant",
+  "cfg-if",
+@@ -4440,6 +4474,22 @@ dependencies = [
+  "toml 1.1.6+spec-1.1.0",
+ ]
+ 
++[[package]]
++name = "ruma-signatures"
++version = "0.22.1"
++source = "git+https://github.com/ruma/ruma?rev=f99fc5c53a7ee3057a9203f76a0ad12839d67be6#f99fc5c53a7ee3057a9203f76a0ad12839d67be6"
++dependencies = [
++ "base64 0.23.1",
++ "ed25519-dalek",
++ "pkcs8",
++ "rand 0.10.3",
++ "ruma-common",
++ "ruma-events",
++ "serde_json",
++ "sha2 0.11.0",
++ "thiserror 2.0.21",
++]
++
+ [[package]]
+ name = "rusqlite"
+ version = "0.40.2"
+@@ -4479,7 +4529,7 @@ dependencies = [
+  "errno",
+  "libc",
+  "linux-raw-sys",
+- "windows-sys 0.61.2",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -4538,7 +4588,7 @@ dependencies = [
+  "security-framework",
+  "security-framework-sys",
+  "webpki-root-certs",
+- "windows-sys 0.61.2",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -4960,6 +5010,16 @@ dependencies = [
+  "windows-sys 0.61.2",
+ ]
+ 
++[[package]]
++name = "spki"
++version = "0.8.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7ef958a98b9d5da290cfc78946e9f3e61e1e62a18db0d92cac0b83cc161491a9"
++dependencies = [
++ "base64ct",
++ "der",
++]
++
+ [[package]]
+ name = "stable_deref_trait"
+ version = "1.2.1"
+@@ -5083,7 +5143,7 @@ dependencies = [
+  "getrandom 0.4.3",
+  "once_cell",
+  "rustix",
+- "windows-sys 0.61.2",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -5210,9 +5270,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+ 
+ [[package]]
+ name = "tokio"
+-version = "1.53.1"
++version = "1.54.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
++checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
+ dependencies = [
+  "bytes",
+  "libc",
+@@ -5751,9 +5811,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+ 
+ [[package]]
+ name = "vodozemac"
+-version = "0.11.0"
++version = "0.11.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ba935af014ca0ae5fb468daa51da81a8a0df7daad23c052c878b7c690cdf2574"
++checksum = "9e322119358132f5fa8e529de9ed9af4cd67ae71ffc6f12c133f75d5c4ec9637"
+ dependencies = [
+  "aes",
+  "arrayvec",
+@@ -6086,7 +6146,7 @@ version = "0.1.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+diff --git a/Cargo.toml b/Cargo.toml
+index c45ad4b..d7a5ebe 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -100,9 +100,9 @@ livekit = { version = "0.9.7", features = [
+ # of matrix-sdk and the `Client` one crate takes is not the one the other accepts.
+ # MSC4354 sticky events come from its `unstable-msc4354` feature, which our
+ # `matrix-sdk` features enable.
+-matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "c6ad52ecc09eaa36601f55effb0a48a533eb87dd" }
+-matrix-sdk-base = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "c6ad52ecc09eaa36601f55effb0a48a533eb87dd" }
+-matrix-sdk-ui = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "c6ad52ecc09eaa36601f55effb0a48a533eb87dd" }
++matrix-sdk = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "f076a9de6f59b43509d0cbbd4b1077c5c58d2c22" }
++matrix-sdk-base = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "f076a9de6f59b43509d0cbbd4b1077c5c58d2c22" }
++matrix-sdk-ui = { git = "https://github.com/matrix-org/matrix-rust-sdk", rev = "f076a9de6f59b43509d0cbbd4b1077c5c58d2c22" }
+ 
+ # matrix-rust-sdk carries these git pins in its own `[patch]` tables. Cargo does
+ # NOT propagate a dependency's `[patch]` to the consuming workspace, so they are
+diff --git a/crates/matrix-rtc-core/src/compat/ingest.rs b/crates/matrix-rtc-core/src/compat/ingest.rs
+index bc6b1a6..87f960a 100644
+--- a/crates/matrix-rtc-core/src/compat/ingest.rs
++++ b/crates/matrix-rtc-core/src/compat/ingest.rs
+@@ -368,9 +368,9 @@ impl IngestDialect for MembershipFormat {
+         }
+     }
+ 
+-    /// The pre-sticky generation has no slots.
++    /// Legacy Element Call generations do not publish m.rtc.slot state.
+     fn reads_slots(&self) -> bool {
+-        !self.reads_state_membership()
++        matches!(self, MembershipFormat::Current)
+     }
+ 
+     fn current_membership(
+diff --git a/crates/matrix-rtc-matrix-sdk/src/sdk.rs b/crates/matrix-rtc-matrix-sdk/src/sdk.rs
+index 6ee873d..cec749a 100644
+--- a/crates/matrix-rtc-matrix-sdk/src/sdk.rs
++++ b/crates/matrix-rtc-matrix-sdk/src/sdk.rs
+@@ -377,21 +377,24 @@ impl MatrixBackend for SdkMatrixBackend {
+             .delay_id)
+     }
+ 
+-    /// Not yet: the SDK cannot attach a sticky duration to a delayed send
+-    /// (matrix-org/matrix-rust-sdk#6973), and a plain delayed event would fire
+-    /// without replacing the sticky membership. The core then joins without a
+-    /// dead man's switch, on a shorter membership lifetime.
++    /// Schedule an encrypted sticky leave using the SDK's normal send preparation.
+     async fn send_delayed_sticky_event(
+         &self,
+-        _room_id: String,
+-        _event_type: String,
+-        _content: Value,
+-        _sticky_duration_ms: u64,
+-        _delay_ms: u64,
++        room_id: String,
++        event_type: String,
++        content: Value,
++        sticky_duration_ms: u64,
++        delay_ms: u64,
+     ) -> Result<String, CommandError> {
+-        Err(CommandError::DelayedEventsNotSupported(
+-            "the SDK cannot send a delayed sticky event yet (matrix-rust-sdk#6973)".to_owned(),
+-        ))
++        let room = self.room(&room_id)?;
++        let event_type = wire_event_type(event_type).to_string();
++        Ok(room.send_raw(&event_type, &content)
++            .with_sticky_duration(Duration::from_millis(sticky_duration_ms))
++            .into_delayed(Duration::from_millis(delay_ms))
++            .with_request_config(rtc_request_config())
++            .await
++            .map_err(command_error)?
++            .delay_id)
+     }
+ 
+     async fn restart_delayed_event(

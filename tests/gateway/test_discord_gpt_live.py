@@ -19,9 +19,10 @@ from gateway.config import PlatformConfig
 from gateway.run_voice import GatewayVoiceMixin
 from plugins.platforms.discord.adapter import DiscordAdapter, VoiceReceiver
 from plugins.platforms.discord.gpt_live import (
-    DELEGATION_CONTEXT, GptLiveConfig, GptLiveSession, PendingDelegation,
-    commentary_chunks, load_gpt_live_config, pcm24_mono_to_pcm48_stereo, pcm48_stereo_to_pcm24_mono,
+    GptLiveConfig, GptLiveSession,
+    load_gpt_live_config, pcm24_mono_to_pcm48_stereo, pcm48_stereo_to_pcm24_mono,
 )
+from plugins.platforms.live_voice.session import DELEGATION_CONTEXT, PendingDelegation, commentary_chunks
 from plugins.platforms.discord import adapter as discord_adapter_module
 from plugins.platforms.discord import adapter_gpt_live as live_adapter_module
 from plugins.platforms.discord.voice_mixer import FRAME_SIZE, SILENCE_FRAME, VoiceMixer
@@ -77,6 +78,81 @@ def test_receiver_only_forwards_mapped_allowed_audio_and_never_buffers_live():
     assert not receiver._decoders
 
 
+def test_receiver_tracks_replaced_transport_key_and_dave_session(monkeypatch):
+    import nacl.secret
+    import sys
+    # The transport test uses a fake DAVE boundary, including its media enum.
+    monkeypatch.setitem(sys.modules, 'davey', SimpleNamespace(MediaType=SimpleNamespace(audio=0)))
+    monkeypatch.setattr(discord_adapter_module, 'discord', SimpleNamespace(opus=SimpleNamespace(
+        Decoder=lambda: SimpleNamespace(decode=lambda data: bytes(3840)))))
+    frames, decrypted_by = [], []
+    def dave(name):
+        def decrypt(uid, kind, data):
+            decrypted_by.append(name)
+            return data
+        return SimpleNamespace(decrypt=decrypt)
+    conn = SimpleNamespace(secret_key=list(bytes(32)), dave_session=dave('initial'),
+                           ssrc=9, mode='aead_xchacha20_poly1305_rtpsize',
+                           hook=None, add_socket_listener=MagicMock(), remove_socket_listener=MagicMock())
+    receiver = VoiceReceiver(SimpleNamespace(_connection=conn),
+        stream_callback=lambda uid, pcm: frames.append((uid, pcm)),
+        stream_user_ids={22}, utterance_capture=False)
+    receiver.start()
+    receiver.map_ssrc(100, 22)
+    for seq, flags in enumerate([0x80, 0x90, 0x91]):
+        # Exercise normal headers, extensions, CSRCs, then a second rekey.
+        conn.secret_key = list(bytes([seq + 1]) * 32)
+        conn.dave_session = dave(str(seq))
+        header = struct.pack('>BBHII', flags, 0x78, seq, 960 * seq, 100)
+        if flags & 1:
+            header += struct.pack('>I', 55)
+        extension = b''
+        if flags & 0x10:
+            header += struct.pack('>HH', 0xbede, 1)
+            extension = bytes(4)
+        nonce = struct.pack('>I', seq) + bytes(20)
+        encrypted = nacl.secret.Aead(bytes(conn.secret_key)).encrypt(
+            extension + b'\xf8\xff\xfe', header, nonce).ciphertext
+        receiver._on_packet(header + encrypted + nonce[:4])
+    receiver.stop()
+    assert len(frames) == 3 and all(uid == 22 and len(pcm) == 3840 for uid, pcm in frames)
+    assert decrypted_by == ['0', '1', '2']
+    assert receiver._stream_stats['transport_errors'] == 0
+
+
+def test_receiver_recovers_only_after_sustained_allowed_decode_failures(monkeypatch):
+    import nacl.secret
+    now, failures, frames = [0.0], [], []
+    monkeypatch.setattr(discord_adapter_module.time, 'monotonic', lambda: now[0])
+    key = bytes(32)
+    conn = SimpleNamespace(secret_key=list(key), dave_session=None, ssrc=9,
+                           mode='aead_xchacha20_poly1305_rtpsize')
+    receiver = VoiceReceiver(SimpleNamespace(_connection=conn),
+        stream_callback=lambda uid, pcm: frames.append(pcm), stream_user_ids={22},
+        utterance_capture=False, decode_failure_callback=lambda: failures.append(True))
+    receiver._running = True
+    receiver.map_ssrc(100, 22)
+    header = struct.pack('>BBHII', 0x80, 0x78, 1, 960, 100)
+    nonce = bytes(24)
+    good = header + nacl.secret.Aead(key).encrypt(b'\xf8\xff\xfe', header, nonce).ciphertext + nonce[:4]
+    bad = good[:-5] + bytes([good[-5] ^ 1]) + good[-4:]
+    for _ in range(60):
+        receiver._on_packet(bad)
+    assert not failures  # A brief burst does not reconnect.
+    receiver._on_packet(good)
+    now[0] = 5
+    receiver._on_packet(bad)
+    assert not failures  # A decoded frame reset the failure window.
+    for _ in range(60):
+        now[0] += 0.05
+        receiver._on_packet(bad)
+    assert failures == [True] and len(frames) == 1
+    now[0] += 30
+    for _ in range(60):
+        receiver._on_packet(bad)
+    assert failures == [True]  # At most one recovery per receiver.
+
+
 def adapter():
     return DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
@@ -96,7 +172,7 @@ async def test_final_send_taps_before_delivery_without_swallowing_text(monkeypat
     token = DELEGATION_CONTEXT.set((session, "one"))
     try:
         future = asyncio.get_running_loop().create_future()
-        session.pending = PendingDelegation("one", future)
+        session.pending["one"] = PendingDelegation("one", future)
         await a.send("33", "Tool preview")
         assert not future.done()
         result = await a.send("33", "Final answer", metadata={"notify": True})
@@ -104,13 +180,13 @@ async def test_final_send_taps_before_delivery_without_swallowing_text(monkeypat
         assert channel.send.await_count == 2
         channel.send.assert_awaited_with(content="Final answer", reference=None)
 
-        session.pending = PendingDelegation("two", asyncio.get_running_loop().create_future())
+        session.pending["two"] = PendingDelegation("two", asyncio.get_running_loop().create_future())
         await a.send("33", "Late answer", metadata={"notify": True})
-        assert not session.pending.future.done()
+        assert not session.pending["two"].future.done()
         DELEGATION_CONTEXT.set((session, "two"))
         channel.send.side_effect = RuntimeError("Missing Send Messages")
         result = await a.send("33", "Still spoken", metadata={"notify": True})
-        assert not result.success and session.pending.future.result() == "Still spoken"
+        assert not result.success and session.pending["two"].future.result() == "Still spoken"
         assert a._should_auto_tts_for_chat("33") is False
         assert (await a.play_tts("33", "/unused.mp3")).success
         assert a._streaming_tts_turn_completed("session") is True
@@ -123,15 +199,15 @@ async def test_stream_completion_uses_authoritative_final_only():
     a = adapter()
     session = GptLiveSession(a, 1, None, "33", config())
     a._gpt_live_sessions[1] = session
-    session.pending = PendingDelegation("one", asyncio.get_running_loop().create_future())
+    session.pending["one"] = PendingDelegation("one", asyncio.get_running_loop().create_future())
     event = SimpleNamespace(source=SimpleNamespace(chat_id="33"))
     token = DELEGATION_CONTEXT.set((session, "one"))
     try:
         a._gpt_live_complete_stream(event)
-        assert not session.pending.future.done()
+        assert not session.pending["one"].future.done()
         event._streamed_final_response = "The completed streamed answer"
         a._gpt_live_complete_stream(event)
-        assert session.pending.future.result() == event._streamed_final_response
+        assert session.pending["one"].future.result() == event._streamed_final_response
     finally:
         DELEGATION_CONTEXT.reset(token)
 
@@ -357,7 +433,8 @@ async def test_config_keys_and_usage_remain_in_their_own_profile(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconnect(monkeypatch):
+@pytest.mark.parametrize('failure', ['transport', 'microphone_transport'])
+async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconnect(monkeypatch, failure):
     monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
     drops = [asyncio.Event(), asyncio.Event()]
     started = [asyncio.Event(), asyncio.Event()]
@@ -369,8 +446,18 @@ async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconn
         await ws.recv()
         await ws.send(json.dumps({"type": "session.started", "session": {"id": f"fake_{index}"}}))
         started[index].set()
-        await drops[index].wait()
-        await ws.close()
+        async def drop():
+            await drops[index].wait()
+            await ws.close()
+        dropping = asyncio.create_task(drop())
+        try:
+            async for raw in ws:
+                if json.loads(raw)['type'] == 'session.close':
+                    await ws.send(json.dumps({'type': 'session.closed'}))
+                    break
+        finally:
+            dropping.cancel()
+            await asyncio.gather(dropping, return_exceptions=True)
 
     a = adapter()
     member = SimpleNamespace(id=22, voice=None)
@@ -378,7 +465,7 @@ async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconn
     channel = SimpleNamespace(id=33, guild=guild)
     member.voice = SimpleNamespace(channel=channel)
     bot = SimpleNamespace(id=999, guild=guild)
-    a._client = SimpleNamespace(user=bot)
+    a._client = SimpleNamespace(user=bot, get_channel=lambda _: None)
     a._is_allowed_user = MagicMock(return_value=True)
     a._gpt_live_wanted.add(1)
     async def join(*args, **kwargs):
@@ -391,17 +478,31 @@ async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconn
     async with websockets.serve(serve, "127.0.0.1", 0) as server:
         a._gpt_live_cfg = config(ws_url=f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}")
         await a._start_gpt_live(channel)
-        drops[0].set()
+        if failure == 'transport':
+            drops[0].set()
+        else:
+            a._gpt_live_receive_failed(a._gpt_live_sessions[1])
         await asyncio.wait_for(started[1].wait(), 8)
         async with asyncio.timeout(5):
             while not a._gpt_live_sessions[1].is_live:
                 await asyncio.sleep(0.01)
         second = a._gpt_live_sessions[1]
-        drops[1].set()
+        if failure == 'transport':
+            drops[1].set()
+        else:
+            # A late notification from the original receiver cannot close the
+            # replacement call, and a second real failure cannot loop forever.
+            original = SimpleNamespace(guild_id=1, close_requested=False)
+            a._gpt_live_receive_failed(original)
+            assert a._gpt_live_sessions[1] is second
+            a._gpt_live_receive_failed(second)
         async with asyncio.timeout(5):
-            await second._receiver
+            if failure == 'transport':
+                await second._receiver
             while a._gpt_live_tasks:
                 await asyncio.sleep(0.01)
+        for drop in drops:
+            drop.set()
     assert len(connections) == 2 and a.join_voice_channel.await_count == 2
     assert not a._gpt_live_sessions and not a._gpt_live_wanted
 
@@ -474,7 +575,7 @@ async def test_gateway_ingress_preserves_replies_with_optional_transcript_echo(s
     a._auto_tts_default = True
     session = GptLiveSession(a, 1, None, "33", config())
     a._gpt_live_sessions[1] = session
-    session.pending = PendingDelegation("one", asyncio.get_running_loop().create_future())
+    session.pending["one"] = PendingDelegation("one", asyncio.get_running_loop().create_future())
     runner = GatewayVoiceMixin()
     runner._canonicalize = lambda source, **kwargs: source
     runner._is_user_authorized_for_source = lambda source: True
@@ -498,7 +599,7 @@ async def test_gateway_ingress_preserves_replies_with_optional_transcript_echo(s
     finally:
         DELEGATION_CONTEXT.reset(token)
     # This path creates the real delivery ledger and can wait for filesystem I/O.
-    answer = await asyncio.wait_for(asyncio.shield(session.pending.future), 30)
+    answer = await asyncio.wait_for(asyncio.shield(session.pending["one"].future), 30)
     await asyncio.gather(*tuple(a._background_tasks))
     assert answer == "Sunny."
     assert any("Check the weather" in text for text in posted) is echo_transcript
@@ -577,7 +678,7 @@ async def test_backend_progress_reaches_live_before_the_final_reply(monkeypatch,
         try:
             await session.start()
             await asyncio.wait_for(progress_received.wait(), 5)
-            assert not session.pending.future.done()
+            assert not session.pending["one"].future.done()
             assert not any(event["type"] == "session.commentary.append" for event in accepted)
             updates = [event for event in accepted if event["type"] == "session.thinking.append"]
             assert updates and all(event["delegation_id"] == "one" for event in updates)
@@ -598,7 +699,7 @@ async def test_late_backend_completion_updates_its_own_task_without_completing_a
     session = GptLiveSession(a, 1, None, "33", config())
     session._accepting_audio = True
     session._seen.update({"old", "new"})
-    session.pending = PendingDelegation("new", asyncio.get_running_loop().create_future())
+    session.pending["new"] = PendingDelegation("new", asyncio.get_running_loop().create_future())
     sent, received = [], asyncio.Event()
     async def send(event):
         sent.append(event)
@@ -614,7 +715,7 @@ async def test_late_backend_completion_updates_its_own_task_without_completing_a
         await asyncio.gather(task, return_exceptions=True)
     assert len(sent) == 1 and sent[0]["type"] == "session.thinking.append"
     assert sent[0]["delegation_id"] == "old" and "completed successfully" in sent[0]["content"]
-    assert not session.pending.future.done()
+    assert not session.pending["new"].future.done()
     session._accepting_audio = False
     session.feed_backend_progress("New update after disconnect", "new")
     assert session._backend_updates.empty()

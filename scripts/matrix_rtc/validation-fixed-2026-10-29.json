@@ -1,0 +1,55 @@
+{
+  "sdk_revision": "de417a84c566932192c011d9931403b304b9156b",
+  "matrix_sdk_revision": "f076a9de6f59b43509d0cbbd4b1077c5c58d2c22",
+  "source_patch_sha256": "ab9a59b07f6d1c3c6cb02852970a43880b9b2519ce40b414d03a0b2fd7f1b818",
+  "synapse": "1.164.1",
+  "livekit": "1.13.11",
+  "lk_jwt_service": "0.9.0",
+  "native_fix": true,
+  "production_ready": false,
+  "results": [
+    {
+      "format": "current",
+      "gate": "encrypted_duplex",
+      "exit_code": 0,
+      "elapsed_seconds": 7.43,
+      "log": "final-current-encrypted_duplex.log"
+    },
+    {
+      "format": "current",
+      "gate": "crash_cleanup",
+      "exit_code": 0,
+      "elapsed_seconds": 43.33,
+      "log": "final-current-crash_cleanup.log"
+    },
+    {
+      "format": "sticky",
+      "gate": "encrypted_duplex",
+      "exit_code": 0,
+      "elapsed_seconds": 7.53,
+      "log": "final-sticky-encrypted_duplex.log"
+    },
+    {
+      "format": "sticky",
+      "gate": "crash_cleanup",
+      "exit_code": 0,
+      "elapsed_seconds": 33.61,
+      "log": "final-sticky-crash_cleanup.log"
+    },
+    {
+      "format": "state",
+      "gate": "encrypted_duplex",
+      "exit_code": 0,
+      "elapsed_seconds": 8.04,
+      "log": "final-state-encrypted_duplex.log"
+    },
+    {
+      "format": "state",
+      "gate": "crash_cleanup",
+      "exit_code": 0,
+      "elapsed_seconds": 34.15,
+      "log": "final-state-crash_cleanup.log"
+    }
+  ],
+  "lockfile_sha256": "f8a43e76704cf49bb285986ba0d63c2ba4e97989f750d9a48786949f47a9da43"
+}

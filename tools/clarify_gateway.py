@@ -222,6 +222,20 @@ def resolve_text_response_for_session(session_key: str, response: str) -> bool:
     return attempt_text_response_for_session(session_key, response) == TEXT_RESOLVED
 
 
+def respond_to_id(clarify_id: str, session_key: str, response: str) -> str:
+    """Resolve a previously displayed question without falling through to its successor."""
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None or entry.session_key != session_key or entry.event.is_set():
+            return TEXT_NO_PENDING
+        coerced, reason = _coerce_text_response_detailed(entry, response)
+        if coerced is None:
+            return TEXT_REJECTED_SELECTION if reason == "invalid_selection" else TEXT_REJECTED_PROSE
+        entry.response = coerced
+        entry.event.set()
+        return TEXT_RESOLVED
+
+
 def mark_awaiting_text(clarify_id: str) -> bool:
     """Flip an entry into text-capture mode (user picked 'Other'); False if unknown."""
     with _lock:

@@ -2399,6 +2399,10 @@ class GatewayTurnMixin:
         try:
             adapter = self._delivery_adapter_for(source)
             override = adapter.toolsets_for_source(source) if adapter is not None else None
+            extension = getattr(adapter, "additional_toolsets_for_source", None)
+            extra = extension(source) if callable(extension) else []
+            if isinstance(extra, list) and extra:
+                override = list(override or _get_platform_tools(user_config, platform_key)) + extra
         except Exception:
             override = None
         if override and isinstance(override, list):

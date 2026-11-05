@@ -4040,6 +4040,9 @@ class BasePlatformAdapter(ABC):
                            expected_session_key, session_key)
             return
         # On-entry self-heal: clear a guard whose owner task already exited.
+        if event._execution_target is not None:
+            from gateway.control_target import validate_execution
+            validate_execution(event, self.gateway_runner)
         if session_key in self._active_sessions:
             self._heal_stale_session_lock(session_key)
         if session_key in self._active_sessions:
@@ -4591,6 +4594,7 @@ class BasePlatformAdapter(ABC):
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
             await self._release_turn_marker(event)
+            event._completed_response = str(response or getattr(event, "_streamed_final_response", "") or "")
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
@@ -4818,6 +4822,10 @@ class BasePlatformAdapter(ABC):
         """Per-source toolset override REPLACING ``platform_toolsets.<platform>``, or None
         (default); validated via ``_get_platform_tools`` (webhook adapter pins per-route)."""
         return None
+
+    def additional_toolsets_for_source(self, source: "SessionSource") -> List[str]:
+        """Stable platform capabilities added to configured tools; validated by the normal resolver."""
+        return []
 
     def format_message(self, content: str) -> str:
         """Format a message for this platform (override for e.g. Telegram
