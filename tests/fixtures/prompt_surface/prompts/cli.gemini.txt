@@ -61,6 +61,7 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
     - p5js: p5.js sketches: gen art, shaders, interactive, 3D.
     - popular-web-designs: 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.
     - songwriting-and-ai-music: Songwriting craft and Suno AI music prompts.
+  - heavy-job-admission: Serialize heavy jobs with host memory preflight.
   email:
     - email-inbox-triage: Triage an inbox: prioritize threads, draft replies safely.
     - himalaya: Himalaya CLI: IMAP/SMTP email from terminal.

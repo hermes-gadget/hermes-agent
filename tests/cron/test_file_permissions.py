@@ -22,6 +22,8 @@ class TestCronFilePermissions(unittest.TestCase):
     """Verify cron files get secure permissions."""
 
     def setUp(self):
+        # These assertions exercise host policy, even when the test runner is containerized.
+        self.enterContext(patch("hermes_constants._detect_container", return_value=False))
         self.tmpdir = tempfile.mkdtemp()
         self.cron_dir = Path(self.tmpdir) / "cron"
         self.output_dir = self.cron_dir / "output"
@@ -88,6 +90,8 @@ class TestConfigFilePermissions(unittest.TestCase):
     """Verify config files get secure permissions."""
 
     def setUp(self):
+        # Container permission preservation has its own explicit regression below.
+        self.enterContext(patch("hermes_constants._detect_container", return_value=False))
         self.tmpdir = tempfile.mkdtemp()
 
     def tearDown(self):

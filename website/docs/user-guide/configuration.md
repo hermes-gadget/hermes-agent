@@ -3067,6 +3067,8 @@ security:
 
 Earlier releases also had `tirith_*` keys for a bundled command scanner; it was removed and upgrading drops those keys. Content-level command checks are described in [Content-Level Command Checks](security.md#content-level-command-checks).
 
+`security.protected_instruction_trusted_job_ids` is an optional list of cron job IDs the owner permits to write protected instruction files through file tools without an interactive approval. It defaults to `[]`. A listed ID qualifies only inside a cron approval context with a matching `cron:<job_id>:<run>` task ID; the grant is audited, and other approval and filesystem guards still apply.
+
 ## Website Blocklist
 
 Block specific domains from being accessed by the agent's web and browser tools:
