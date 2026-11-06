@@ -24,7 +24,8 @@ def _mode(path) -> int:
 
 
 def _no_managed(monkeypatch, home):
-    """Force the not-managed branch: no HERMES_MANAGED env, no marker in ``home``."""
+    """Select unmanaged host permission policy, including in a containerized runner."""
+    monkeypatch.setattr("hermes_constants._detect_container", lambda: False)
     monkeypatch.delenv("HERMES_MANAGED", raising=False)
     monkeypatch.delenv("HERMES_HOME_MODE", raising=False)
     monkeypatch.delenv("HERMES_UID", raising=False)
