@@ -500,7 +500,7 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "Turn budget for goal_mode workers. Caps how many "
                 "continuation turns the worker may take before the task "
                 "is blocked for review. Ignored unless goal_mode is "
-                "true. Defaults to the goal-engine default (20)."
+                "true. Defaults to the goal-engine default (50)."
         )),
         "model": _prop("string", (
                 "Pin the dispatched worker to this model instead of "

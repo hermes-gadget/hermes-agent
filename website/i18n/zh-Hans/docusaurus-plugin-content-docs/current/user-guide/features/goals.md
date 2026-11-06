@@ -29,11 +29,11 @@ description: "设置一个持续目标，让 Hermes 跨轮次持续工作直到�
 
 你将看到：
 
-1. **目标已接受** — `⊙ Goal set (20-turn budget): <your goal>`
+1. **目标已接受** — `⊙ Goal set (50-turn budget): <your goal>`
 2. **第 1 轮运行** — Hermes 开始工作，就像你发送了一条普通消息一样。
 3. **裁判运行** — 轮次结束后，裁判模型判定 `done` 或 `continue`。
-4. **若需要则触发循环** — 若为 `continue`，你将看到 `↻ Continuing toward goal (1/20): <judge's reason>`，Hermes 自动执行下一步。
-5. **终止** — 最终你会看到 `✓ Goal achieved: <reason>` 或 `⏸ Goal paused — N/20 turns used`。
+4. **若需要则触发循环** — 若为 `continue`，你将看到 `↻ Continuing toward goal (1/50): <judge's reason>`，Hermes 自动执行下一步。
+5. **终止** — 最终你会看到 `✓ Goal achieved: <reason>` 或 `⏸ Goal paused — N/50 turns used`。
 
 ## 命令
 
@@ -80,10 +80,10 @@ description: "设置一个持续目标，让 Hermes 跨轮次持续工作直到�
 
 ### 轮次预算
 
-默认为 20 个续行轮次（`config.yaml` 中的 `goals.max_turns`）。预算耗尽时，Hermes 自动暂停并告知你如何继续：
+默认为 50 个续行轮次（`config.yaml` 中的 `goals.max_turns`）。预算耗尽时，Hermes 自动暂停并告知你如何继续：
 
 ```
-⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
+⏸ Goal paused — 50/50 turns used. Use /goal resume to keep going, or /goal clear to stop.
 ```
 
 `/goal resume` 将计数器重置为零，你可以按可控的块继续推进。
@@ -102,7 +102,7 @@ agent 正在运行时，`/goal status`、`/goal pause` 和 `/goal clear` 可以�
 
 ### Prompt 缓存
 
-续行 prompt 是一条以用户角色追加到历史记录中的普通消息。它**不会**修改系统 prompt、切换工具集，也不会以任何使 Hermes prompt 缓存失效的方式改动对话。运行一个 20 轮目标，在缓存层面与 20 轮普通对话的开销相同。
+续行 prompt 是一条以用户角色追加到历史记录中的普通消息。它**不会**修改系统 prompt、切换工具集，也不会以任何使 Hermes prompt 缓存失效的方式改动对话。运行一个 50 轮目标，在缓存层面与 50 轮普通对话的开销相同。
 
 ## 配置
 
@@ -111,9 +111,9 @@ agent 正在运行时，`/goal status`、`/goal pause` 和 `/goal clear` 可以�
 ```yaml
 goals:
   # Hermes 自动暂停并要求你执行 /goal resume 之前的最大续行轮次。
-  # 默认 20。若想要更紧凑的循环可降低此值；
+  # 默认 50。若想要更紧凑的循环可降低此值；
   # 长时间重构可适当提高。
-  max_turns: 20
+  max_turns: 50
 ```
 
 ### 选择裁判模型
@@ -134,25 +134,25 @@ auxiliary:
 ```
 You: /goal Create four files /tmp/note_{1..4}.txt, one per turn, each containing its number as text
 
-  ⊙ Goal set (20-turn budget): Create four files /tmp/note_{1..4}.txt, one per turn, each containing its number as text
+  ⊙ Goal set (50-turn budget): Create four files /tmp/note_{1..4}.txt, one per turn, each containing its number as text
 
 Hermes: Creating /tmp/note_1.txt now.
   💻 echo "1" > /tmp/note_1.txt   (0.1s)
   I've created /tmp/note_1.txt with the content "1". I'll continue with the remaining files on the next turn as you specified.
 
-  ↻ Continuing toward goal (1/20): Only 1 of 4 files has been created; 3 files remain.
+  ↻ Continuing toward goal (1/50): Only 1 of 4 files has been created; 3 files remain.
 
 Hermes: [Continuing toward your standing goal]
   💻 echo "2" > /tmp/note_2.txt   (0.1s)
   Created /tmp/note_2.txt. Two more to go.
 
-  ↻ Continuing toward goal (2/20): 2 of 4 files created; 2 remain.
+  ↻ Continuing toward goal (2/50): 2 of 4 files created; 2 remain.
 
 Hermes: [Continuing toward your standing goal]
   💻 echo "3" > /tmp/note_3.txt   (0.1s)
   Created /tmp/note_3.txt.
 
-  ↻ Continuing toward goal (3/20): 3 of 4 files created; 1 remains.
+  ↻ Continuing toward goal (3/50): 3 of 4 files created; 1 remains.
 
 Hermes: [Continuing toward your standing goal]
   💻 echo "4" > /tmp/note_4.txt   (0.1s)

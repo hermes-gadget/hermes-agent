@@ -625,9 +625,9 @@ class CLILoopsMixin:
             from hermes_cli.config import load_config
             try:
                 goals_cfg = (load_config() or {}).get("goals") or {}
-                return int(goals_cfg.get("max_turns", 20) or 20)
-            except Exception:  # health: allow BLE001 -- main's fallback: an unreadable goals config is the 20-turn default
-                return 20
+                return int(goals_cfg.get("max_turns", 50) or 50)
+            except Exception:  # health: allow BLE001 -- main's fallback: an unreadable goals config is the 50-turn default
+                return 50
 
         def load():
             from hermes_cli.goals import GoalManager

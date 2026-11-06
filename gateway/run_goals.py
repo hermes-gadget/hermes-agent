@@ -42,9 +42,9 @@ class GatewayGoalsMixin:
                 from hermes_cli.config import load_config
 
                 goals_cfg = (load_config() or {}).get("goals") or {}
-            return int(goals_cfg.get("max_turns", 20) or 20)
+            return int(goals_cfg.get("max_turns", 50) or 50)
         except Exception:
-            return 20
+            return 50
 
     async def _warm_goals_session_db(self, label: str) -> None:
         """Warm the goals SessionDB cache off-loop (best-effort): a cold cache runs the state.db

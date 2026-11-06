@@ -722,7 +722,7 @@ hermes kanban create "Translate the docs site to French" \
     --body "Acceptance: every page translated, no English left, links intact." \
     --assignee linguist \
     --goal \
-    --goal-max-turns 15      # optional; default 20
+    --goal-max-turns 15      # optional; default 50
 ```
 
 Use it for open-ended, multi-step, or "keep going until X is true" cards. Skip it for cheap one-shot work — the per-turn judge overhead isn't worth it, and the dispatcher's existing retry/circuit-breaker already handles transient worker failures. The judge is only as good as your goal text, so write the body as **explicit acceptance criteria**.

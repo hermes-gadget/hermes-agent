@@ -47,11 +47,11 @@ If you want work on the board, put it there yourself (`hermes kanban create …`
 
 What you'll see:
 
-1. **Goal accepted** — `⊙ Goal set (20-turn budget): <your goal>`
+1. **Goal accepted** — `⊙ Goal set (50-turn budget): <your goal>`
 2. **Turn 1 runs** — Hermes starts working as if you'd sent the goal as a normal message.
 3. **Judge runs** — after the turn, the judge model decides `done`, `continue`, or `blocked`.
-4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/20): <judge's reason>` and Hermes takes the next step automatically.
-5. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — N/20 turns used`.
+4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/50): <judge's reason>` and Hermes takes the next step automatically.
+5. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — N/50 turns used`.
 
 ## Commands
 
@@ -194,10 +194,10 @@ If the judge errors (network blip, malformed response, unavailable aux client), 
 
 ### Turn budget
 
-Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
+Default is 50 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
 
 ```
-⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
+⏸ Goal paused — 50/50 turns used. Use /goal resume to keep going, or /goal clear to stop.
 ```
 
 `/goal resume` resets the counter to zero, so you can keep going in measured chunks.
@@ -220,7 +220,7 @@ Goal state lives in `SessionDB.state_meta` keyed by `goal:<session_id>`. That me
 
 ### Prompt cache
 
-The continuation prompt is a plain user-role message appended to history. It does **not** mutate the system prompt, swap toolsets, or touch the conversation in any way that invalidates Hermes' prompt cache. Running a 20-turn goal costs the same cache-wise as 20 turns of normal conversation.
+The continuation prompt is a plain user-role message appended to history. It does **not** mutate the system prompt, swap toolsets, or touch the conversation in any way that invalidates Hermes' prompt cache. Running a 50-turn goal costs the same cache-wise as 50 turns of normal conversation.
 
 ## Configuration
 
@@ -229,9 +229,9 @@ Add to `~/.hermes/config.yaml`:
 ```yaml
 goals:
   # Max continuation turns before Hermes auto-pauses and asks you to
-  # /goal resume. Default 20. Lower this if you want tighter loops;
+  # /goal resume. Default 50. Lower this if you want tighter loops;
   # raise it for long-running refactors.
-  max_turns: 20
+  max_turns: 50
 ```
 
 ### Choosing the judge model
@@ -252,25 +252,25 @@ The judge call is small (~200 output tokens) and runs once per turn, so a cheap 
 ```
 You: /goal Create four files ~/.hermes/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
 
-  ⊙ Goal set (20-turn budget): Create four files ~/.hermes/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
+  ⊙ Goal set (50-turn budget): Create four files ~/.hermes/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
 
 Hermes: Creating ~/.hermes/cache/scratch/note_1.txt now.
   💻 echo "1" > ~/.hermes/cache/scratch/note_1.txt   (0.1s)
   I've created ~/.hermes/cache/scratch/note_1.txt with the content "1". I'll continue with the remaining files on the next turn as you specified.
 
-  ↻ Continuing toward goal (1/20): Only 1 of 4 files has been created; 3 files remain.
+  ↻ Continuing toward goal (1/50): Only 1 of 4 files has been created; 3 files remain.
 
 Hermes: [Continuing toward your standing goal]
   💻 echo "2" > ~/.hermes/cache/scratch/note_2.txt   (0.1s)
   Created ~/.hermes/cache/scratch/note_2.txt. Two more to go.
 
-  ↻ Continuing toward goal (2/20): 2 of 4 files created; 2 remain.
+  ↻ Continuing toward goal (2/50): 2 of 4 files created; 2 remain.
 
 Hermes: [Continuing toward your standing goal]
   💻 echo "3" > ~/.hermes/cache/scratch/note_3.txt   (0.1s)
   Created ~/.hermes/cache/scratch/note_3.txt.
 
-  ↻ Continuing toward goal (3/20): 3 of 4 files created; 1 remains.
+  ↻ Continuing toward goal (3/50): 3 of 4 files created; 1 remains.
 
 Hermes: [Continuing toward your standing goal]
   💻 echo "4" > ~/.hermes/cache/scratch/note_4.txt   (0.1s)

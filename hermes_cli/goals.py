@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # ── Constants & defaults ──────────────────────────────────────────────
 
-DEFAULT_MAX_TURNS = 20
+DEFAULT_MAX_TURNS = 50
 DEFAULT_JUDGE_TIMEOUT = 30.0
 # Judge output budget. Reasoning models burn hidden-reasoning tokens before the visible one-line
 # JSON verdict; 200 (the original) reliably truncated it and tripped the auto-pause. 4096 covers

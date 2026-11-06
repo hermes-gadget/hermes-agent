@@ -68,9 +68,9 @@ def _active_goal_manager(session: dict):
     """The session's GoalManager when a goal is active, else None."""
     from hermes_cli.goals import GoalManager
     try:
-        max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
+        max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 50) or 50)
     except Exception:
-        max_turns = 20
+        max_turns = 50
     goal_mgr = GoalManager(
         session_id=str(session.get("session_key") or ""), default_max_turns=max_turns)
     return goal_mgr if goal_mgr.is_active() else None

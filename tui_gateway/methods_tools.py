@@ -803,9 +803,9 @@ def _cmd_goal(rid, params, session, name, arg):
         if err:
             return err
         try:
-            max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
+            max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 50) or 50)
         except Exception:
-            max_turns = 20
+            max_turns = 50
         mgr = goals.GoalManager(session_id=sid_key, default_max_turns=max_turns)
         from hermes_cli.goal_command import dispatch_goal_command
         result = dispatch_goal_command(
