@@ -1,6 +1,7 @@
 """Live voice privacy, wire lifecycle, reply delivery, and delegation invariants."""
 
 import asyncio
+from tests.waiting import async_wait_until
 import base64
 import inspect
 import json
@@ -73,7 +74,7 @@ def test_receiver_only_forwards_mapped_allowed_audio_and_never_buffers_live():
     assert not receiver._buffers and receiver.check_silence() == []
     # Unknown and other users are discarded before transport decryption/Opus.
     receiver._running = True
-    receiver._secret_key = b"invalid"
+    receiver._creds = (b"invalid", None, 0, False)
     receiver._on_packet(struct.pack(">BBHII", 0x80, 0x78, 1, 0, 102) + b"0123456789")
     assert not receiver._decoders
 
@@ -264,9 +265,7 @@ async def test_fake_live_server_delegates_pcm_and_finalizes_usage_once(tmp_path,
             session.feed_user_pcm(99, b"\x01" * FRAME_SIZE)
             session.feed_user_pcm(22, b"\x01" * 7)
             session.feed_user_pcm(22, b"\x01" * (FRAME_SIZE - 7))
-            async with asyncio.timeout(5):
-                while session.usage_seconds != 15:
-                    await asyncio.sleep(0.01)
+            await async_wait_until(lambda: session.usage_seconds == 15, timeout=5)
             assert mixer.read() == pcm24_mono_to_pcm48_stereo(tone)
             assert session.delegations == 1 and len(session.first_audio_ms) == 1
         finally:
@@ -383,14 +382,15 @@ async def test_live_join_replaces_existing_legacy_receiver_and_timeout(monkeypat
 async def test_gateway_allowlist_still_blocks_live_transcript():
     a = adapter()
     a._voice_text_channels[1] = 33
-    a._client = SimpleNamespace(get_channel=MagicMock())
+    channel = SimpleNamespace(id=33, send=AsyncMock())
+    a._client = SimpleNamespace(get_channel=MagicMock(return_value=channel), get_guild=lambda _: None)
     a.handle_message = AsyncMock()
     runner = GatewayVoiceMixin()
     runner._canonicalize = lambda source, **kwargs: source
     runner._is_user_authorized_for_source = lambda source: False
     await runner._handle_voice_channel_input(1, 22, "Do something", adapter=a)
     a.handle_message.assert_not_awaited()
-    a._client.get_channel.assert_not_called()
+    channel.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -483,9 +483,7 @@ async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconn
         else:
             a._gpt_live_receive_failed(a._gpt_live_sessions[1])
         await asyncio.wait_for(started[1].wait(), 8)
-        async with asyncio.timeout(5):
-            while not a._gpt_live_sessions[1].is_live:
-                await asyncio.sleep(0.01)
+        await async_wait_until(lambda: a._gpt_live_sessions[1].is_live, timeout=5)
         second = a._gpt_live_sessions[1]
         if failure == 'transport':
             drops[1].set()
@@ -496,11 +494,9 @@ async def test_transport_reconnects_once_and_expected_bot_leave_preserves_reconn
             a._gpt_live_receive_failed(original)
             assert a._gpt_live_sessions[1] is second
             a._gpt_live_receive_failed(second)
-        async with asyncio.timeout(5):
-            if failure == 'transport':
-                await second._receiver
-            while a._gpt_live_tasks:
-                await asyncio.sleep(0.01)
+        if failure == 'transport':
+            await asyncio.wait_for(second._receiver, 5)
+        await async_wait_until(lambda: not a._gpt_live_tasks, timeout=5)
         for drop in drops:
             drop.set()
     assert len(connections) == 2 and a.join_voice_channel.await_count == 2
@@ -565,7 +561,7 @@ async def test_gateway_ingress_preserves_replies_with_optional_transcript_echo(s
         return SimpleNamespace(id=444)
     channel = SimpleNamespace(id=33, send=AsyncMock(side_effect=post),
                               get_partial_message=lambda _: SimpleNamespace(edit=AsyncMock(side_effect=edit)))
-    a._client = SimpleNamespace(get_channel=lambda _: channel)
+    a._client = SimpleNamespace(get_channel=lambda _: channel, get_guild=lambda _: None)
     a._resolve_channel = AsyncMock(return_value=channel)
     a.send_typing = AsyncMock()
     a.stop_typing = AsyncMock()

@@ -139,14 +139,11 @@ class DiscordGptLiveMixin(LiveBackendMixin):
                             if not session.close_requested and gid in self._gpt_live_wanted:
                                 established = True
                                 return
-                        except Exception as exc:
+                        except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
                             # WebSocket exception reprs can contain auth headers.
                             logger.warning("GPT-Live startup failed (%s)", type(exc).__name__)
-                            if attempt + 1 < attempts and gid in self._gpt_live_wanted:
-                                await session.close("start_failed")
-                                await asyncio.sleep(2)
-                                if self._gpt_live_member_present(channel) and gid in self._gpt_live_wanted:
-                                    continue
+                            if await self._retry_gpt_live_start(session, channel, attempt, attempts):
+                                continue
                             await self._gpt_live_notice(text_id)
                         return
             finally:
@@ -164,12 +161,20 @@ class DiscordGptLiveMixin(LiveBackendMixin):
                             LiveVoiceLease.release(home, owner)
                             self._gpt_live_leases.pop(gid, None)
 
+    async def _retry_gpt_live_start(self, session, channel, attempt, attempts):
+        gid = channel.guild.id
+        if attempt + 1 >= attempts or gid not in self._gpt_live_wanted:
+            return False
+        await session.close("start_failed")
+        await asyncio.sleep(2)
+        return self._gpt_live_member_present(channel) and gid in self._gpt_live_wanted
+
     async def _gpt_live_notice(self, text_id, message=None):
         try:
             channel = self._client.get_channel(int(text_id))
             if channel:
                 await channel.send(message or "Live voice is unavailable. Check the gateway log and OpenAI project access.")
-        except Exception:
+        except Exception:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
             logger.warning("Could not post GPT-Live status to its text channel")
 
     async def _stop_gpt_live(self, guild_id, reason):

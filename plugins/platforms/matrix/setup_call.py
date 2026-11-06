@@ -26,17 +26,17 @@ def main():
     recovery=setting('MATRIX_RECOVERY_KEY')
     if not password and not (store/'session.json').exists():
         password=getpass.getpass('Hermes Matrix password: ')
-    if (store/'recovery.key').exists():recovery=(store/'recovery.key').read_text().strip()
+    if (store/'recovery.key').exists():recovery=(store/'recovery.key').read_text(encoding="utf-8-sig").strip()
     request=json.dumps({'config':cfg,'password':password,'recovery_key':recovery})
     names={'HOME','PATH','LANG','LC_ALL','TZ','SSL_CERT_FILE','SSL_CERT_DIR','HTTPS_PROXY','HTTP_PROXY','NO_PROXY','LD_LIBRARY_PATH'}
-    result=subprocess.run([str(binary),'enrol'],input=request,text=True,capture_output=True,
+    result=subprocess.run([str(binary),'enrol'],input=request,text=True,encoding="utf-8",errors="replace",capture_output=True,check=False,
                           env={k:v for k,v in os.environ.items() if k in names},umask=0o077,timeout=120)
     if result.returncode:
         raise SystemExit('Call device enrolment did not finish. Existing cross-signing keys are preserved; verify this device or supply its recovery key.')
     public=json.loads(result.stdout)
     if not public.get('verified'):raise SystemExit('Call device is not verified')
     if args.configure_chat:
-        if (store/'recovery.key').exists():recovery=(store/'recovery.key').read_text().strip()
+        if (store/'recovery.key').exists():recovery=(store/'recovery.key').read_text(encoding="utf-8-sig").strip()
         if not recovery:raise SystemExit('Device enrolled; chat verification still needs MATRIX_RECOVERY_KEY')
         env_file=home/'.env';env_file.touch(mode=0o600);env_file.chmod(0o600)
         set_key(str(env_file),'MATRIX_RECOVERY_KEY',recovery)

@@ -4,6 +4,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import re
 from types import SimpleNamespace
 
@@ -251,8 +252,8 @@ class ProjectDispatcher:
                         await message.edit(content=safe_text(message.content) + (
                             "\nAdmission is uncertain; check this conversation before retrying." if attempted else
                             "\nThis request was not admitted; no project work was started."))
-                    except Exception:
-                        pass  # Preserve the original failure if Discord is also unavailable.
+                    except Exception as exc:  # health: allow BLE001 -- preserve the original admission failure; a secondary SDK failure can contain auth headers
+                        logging.getLogger(__name__).warning("Could not publish voice admission failure (%s)", type(exc).__name__)
             raise
 
     async def control(self, receipt, action, text):

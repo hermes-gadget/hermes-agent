@@ -373,7 +373,7 @@ def running_native_job(rig):
 
 @pytest.mark.asyncio
 async def test_attach_existing_native_job_and_refuse_replacement_even_in_same_channel(rig):
-    source, key, state = running_native_job(rig)
+    _source, key, state = running_native_job(rig)
     attached = await rig.service.handle({"action": "attach", "agent_id": "gateway:" + key}, "attach")
     result = await rig.service.handle({"action": "steer", "attachment_id": attached["attachment_id"],
                                       "task": "Keep packet compatibility"}, "correction")
@@ -391,7 +391,7 @@ async def test_attach_existing_native_job_and_refuse_replacement_even_in_same_ch
 @pytest.mark.asyncio
 async def test_attached_clarification_answers_exact_question_without_starting_another_turn(rig):
     from tools.clarify_gateway import register, clear_session, get_pending_for_session
-    source, key, state = running_native_job(rig)
+    _source, key, _state = running_native_job(rig)
     attached = await rig.service.handle({"action": "attach", "agent_id": "gateway:" + key}, "attach")
     entry = register("radio-choice", key, "Which format?", ["JSON", "CSV"])
     try:
@@ -484,7 +484,7 @@ async def test_offcall_blocker_is_mirrored_once_and_resolved_muted_blockers_are_
     from tools.clarify_gateway import register, clear_session, respond_to_id
     from plugins.platforms.live_voice.observer import OwnerContext, OwnerObserver
     send = personal_delivery(rig)
-    source, key, state = running_native_job(rig)
+    _source, key, _state = running_native_job(rig)
     config = rig.service.config
     config["voice"]["assistant"]["notifications"] = {"quiet_hours": False}
     observer = OwnerObserver(OwnerContext(rig.runner, rig.home, config, rig.db))
@@ -513,7 +513,7 @@ async def test_voice_observer_binds_native_question_and_answers_without_queue_de
     import time
     from tools.clarify_gateway import register, clear_session
     from plugins.platforms.live_voice.observer import OwnerContext, OwnerObserver
-    source, key, state = running_native_job(rig)
+    _source, key, _state = running_native_job(rig)
     rig.service.config["voice"]["assistant"]["notifications"] = {"quiet_hours": False}
     observer = OwnerObserver(OwnerContext(rig.runner, rig.home, rig.service.config, rig.db))
     observer.calls.add(rig.service)
@@ -638,7 +638,7 @@ async def test_attached_owned_child_uses_native_control_and_verified_completion(
     import weakref
     from tools.delegate_tool import _register_subagent, _unregister_subagent
     from plugins.platforms.live_voice.observer import OwnerContext, OwnerObserver
-    source, key, state = running_native_job(rig)
+    _source, _key, state = running_native_job(rig)
     class Parent:
         session_id = "coding"
         cwd = "/radio"

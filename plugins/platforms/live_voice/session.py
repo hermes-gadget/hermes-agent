@@ -11,7 +11,7 @@ import time
 from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from .recovery import LiveRecoveryMixin
 
@@ -289,7 +289,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
                     self._recovery_audio.append(frame)
                 # Never catch up a stalled socket with a burst of stale frames.
                 deadline = max(deadline + 0.02, self.loop.time())
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
             logger.warning("GPT-Live audio send failed (%s)", type(exc).__name__)
             self._ended("transport")
 
@@ -316,7 +316,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
                     handler(event)
                 if self.finalized.is_set():
                     break
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
             if not self._closing:
                 logger.warning("GPT-Live receive failed (%s)", type(exc).__name__)
         finally:
@@ -412,7 +412,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
                 did = await self._quiet_acks.get()
                 await self._send({'type': 'session.thinking.append', 'delegation_id': did,
                                   'event_id': f'quiet_ack_{did}', 'content': ''})
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
             logger.warning('GPT-Live acknowledgment suppression failed (%s)', type(exc).__name__)
             self._ended('transport')
 
@@ -498,7 +498,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
                     self.backend_updates_sent += 1
                     if self.backend_updates_sent == 1:
                         logger.info("GPT-Live backend progress sent (call=%s)", self.call_id)
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
             logger.warning("GPT-Live backend update failed (%s)", type(exc).__name__)
             self._ended("transport")
 
@@ -594,7 +594,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
             await self._commentary(did, "That's taking longer than expected — I'll keep working on it.")
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
             logger.warning("GPT-Live delegation failed (%s)", type(exc).__name__)
             if self.is_live:
                 await self._commentary(did, "I hit an error while working on that.")
@@ -669,7 +669,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
             return
         self._usage_logged = True
         record = {
-            "ts": datetime.now(timezone.utc).isoformat(), "call_id": self.call_id,
+            "ts": datetime.now(UTC).isoformat(), "call_id": self.call_id,
             "logical_session_id": self.logical_session_id,
             **self._usage_context, "session_id": self.session_id,
             "seconds": self.usage_seconds, "estimated_voice_usd": round(self.usage_seconds / 60 * 0.05, 4),
@@ -722,7 +722,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
                     await asyncio.wait_for(self.finalized.wait(), self.CLOSE_TIMEOUT)
             except (TimeoutError, OSError):
                 logger.warning("GPT-Live close timed out; usage unconfirmed")
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
                 logger.warning("GPT-Live close failed (%s); usage unconfirmed", type(exc).__name__)
             finally:
                 if not self.finalized.is_set() and self.session_id:
@@ -730,7 +730,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
                 if self._ws is not None:
                     try:
                         await self._ws.close()
-                    except Exception as exc:
+                    except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
                         logger.warning("GPT-Live socket close failed (%s)", type(exc).__name__)
                 tasks = [t for t in [self._receiver, *self._tasks] if t and t is not asyncio.current_task()]
                 for task in tasks:
@@ -739,7 +739,7 @@ class LiveVoiceSession(LiveRecoveryMixin):
                 if self.assistant is not None:
                     try:
                         await self.assistant.conversation.close()
-                    except Exception as exc:
+                    except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
                         logger.warning("Voice history close failed (%s)", type(exc).__name__)
                 if self.mixer is not None:
                     self.mixer.detach_live()

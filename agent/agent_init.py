@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- private cron prompt isolation and reserved-credential fallback guards must bind before upstream prompt/client construction; minimal additions at those canonical initialization points
 """Implementation of :meth:`AIAgent.__init__` as ``init_agent(agent, ...)``.
 
 ``init_agent`` is a thin, ordered orchestrator over ``_init_*`` / ``_build_*`` phase

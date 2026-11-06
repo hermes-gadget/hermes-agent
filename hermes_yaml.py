@@ -151,7 +151,7 @@ def roundtrip_yaml_for(text: str) -> YAML:
             try:
                 editor = _editor(*settings)
                 rendered = _dump(editor, editor.load(text))
-            except Exception:
+            except (YAMLError, ValueError, TypeError):
                 continue
             if rendered == text:
                 return _editor(*settings)

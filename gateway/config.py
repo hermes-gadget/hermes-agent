@@ -398,15 +398,15 @@ class ChannelDelegationOverride:
 @dataclass
 class ChannelCredentialOverride:
     main: Optional[str] = None
-    subagents: Optional[List[str]] = None
-    fallbacks: Optional[List[str]] = None
+    subagents: Optional[list[str]] = None
+    fallbacks: Optional[list[str]] = None
     allow_exhausted_free_models: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ChannelCredentialOverride":
+    def from_dict(cls, data: dict[str, Any]) -> "ChannelCredentialOverride":
         return cls(**{f.name: data[f.name] for f in fields(cls) if f.name in data})
 
 
@@ -419,7 +419,7 @@ class ChannelOverride:
     allow_silence: Optional[bool] = None
     delegation: Optional[ChannelDelegationOverride] = None
     credentials: Optional[ChannelCredentialOverride] = None
-    fallback_providers: Optional[List[Dict[str, Any]]] = None
+    fallback_providers: Optional[list[dict[str, Any]]] = None
 
     def to_dict(self) -> dict[str, Any]:
         result = {k: v for k, v in asdict(self).items() if v is not None}

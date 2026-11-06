@@ -52,7 +52,7 @@ def _fixture_plugin(home: Path, name: str, marker: str) -> Path:
 
 
 def _load(home, monkeypatch):
-    import hermes_cli.plugins as plugins
+    from hermes_cli import plugins
 
     monkeypatch.setattr(plugins, "get_bundled_plugins_dir", lambda: home / "no-bundled")
     monkeypatch.setattr(plugins.PluginManager, "_scan_entry_points", lambda self: [])

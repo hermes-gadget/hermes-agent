@@ -34,7 +34,7 @@ def _profile_scope(home):
 
 @pytest.mark.parametrize("callback_kind", ["sync", "async"])
 def test_timed_out_plugin_does_not_poison_tool_calls_until_reload(tmp_path, monkeypatch, callback_kind):
-    import hermes_cli.plugins as plugins
+    from hermes_cli import plugins
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
     from model_tools import handle_function_call
 
@@ -59,7 +59,7 @@ def test_timed_out_plugin_does_not_poison_tool_calls_until_reload(tmp_path, monk
             calls.append(kwargs["tool_call_id"])
             try:
                 if not release.is_set():
-                    await asyncio.sleep(10)
+                    await asyncio.to_thread(release.wait, 10)
                 return {"action": "block", "message": "late result"}
             finally:
                 finished.set()
@@ -175,7 +175,7 @@ def test_async_timeout_disables_only_the_bad_callback(monkeypatch, hook_name, ca
         async def bad(**kwargs):
             calls.append("bad")
             try:
-                await asyncio.sleep(10)
+                await release.wait()
             except asyncio.CancelledError:
                 cancelled.set()
                 if callback_kind == "ignores_cancellation":

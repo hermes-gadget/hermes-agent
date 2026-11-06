@@ -133,7 +133,7 @@ class LiveBackendMixin:
     def _gpt_live_reply_context(self, chat_id):
         context = DELEGATION_CONTEXT.get()
         if context:
-            session, did = context
+            session, _did = context
             if (session.chat_id == str(chat_id)
                     and getattr(self, "_gpt_live_sessions", {}).get(session.call_id) is session):
                 return context
@@ -184,7 +184,7 @@ class LiveBackendMixin:
             try:
                 with _profile_runtime_scope(observer.context.home):
                     await observer.record_result(self, event, outcome)
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
                 logger.warning("Voice result observation failed (%s)", type(exc).__name__)
         context = getattr(event, "_gpt_live_delegation", None)
         if context and getattr(context[0], "assistant", None) is not None and context[0].is_live:

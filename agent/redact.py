@@ -1495,13 +1495,13 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     return "".join(
         part if index % 2 else _redact_sensitive_span(
             part, code_file=code_file, file_read=file_read, secret_file=secret_file,
-            redact_url_credentials=redact_url_credentials)
+            redact_url_credentials=redact_url_credentials, force=force)
         for index, part in enumerate(parts)
     )
 
 
 def _redact_sensitive_span(text: str, *, code_file: bool, file_read: bool,
-                           secret_file: bool, redact_url_credentials: bool) -> str:
+                           secret_file: bool, redact_url_credentials: bool, force: bool) -> str:
     """Redact the text between opaque signature tokens."""
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not
     # be silently fail-open because another flag (code_file, or file_read implying it) was also set.

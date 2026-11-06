@@ -33,7 +33,7 @@ def run(args, *, cwd=None, log=None, env=None, timeout=5400):
         stream.write("Command: " + " ".join(map(str, args)) + "\n")
         stream.flush()
         return subprocess.run(args, cwd=cwd, env=env, stdout=stream,
-                              stderr=subprocess.STDOUT, timeout=timeout)
+                              stderr=subprocess.STDOUT, check=False, timeout=timeout)
 
 
 def prepare(root: Path, *, native_fix=False):
@@ -43,7 +43,7 @@ def prepare(root: Path, *, native_fix=False):
         run(["git", "init", str(sdk)])
         run(["git", "fetch", "--depth=1", SDK_URL, SDK_REV], cwd=sdk)
         run(["git", "checkout", "--detach", "FETCH_HEAD"], cwd=sdk)
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=sdk, text=True).strip()
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=sdk, text=True, encoding="utf-8", errors="replace", timeout=30).strip()
     if revision != SDK_REV:
         raise ValueError(f"SDK checkout must be at {SDK_REV}; refusing to replace {revision}")
     fix_paths = ("Cargo.toml", "Cargo.lock", "crates/matrix-rtc-matrix-sdk/src/sdk.rs",
@@ -51,12 +51,12 @@ def prepare(root: Path, *, native_fix=False):
     if native_fix:
         patch = ASSETS / "native-delayed-sticky.patch"
         implementation_diff = subprocess.check_output(
-            ["git", "diff", "--binary", "HEAD", "--", *fix_paths], cwd=sdk)
+            ["git", "diff", "--binary", "HEAD", "--", *fix_paths], cwd=sdk, timeout=30)
         if not implementation_diff:
             run(["git", "apply", str(patch)], cwd=sdk)
         elif implementation_diff != patch.read_bytes():
             raise ValueError("SDK implementation differs from the qualified native fix")
-    changed = subprocess.check_output(["git", "diff", "HEAD", "--name-only"], cwd=sdk, text=True).splitlines()
+    changed = subprocess.check_output(["git", "diff", "HEAD", "--name-only"], cwd=sdk, text=True, encoding="utf-8", errors="replace", timeout=30).splitlines()
     allowed = {"crates/matrix-rtc-call-sdk/tests/e2e_call/main.rs"}
     if native_fix:
         allowed.update(fix_paths)
@@ -66,7 +66,7 @@ def prepare(root: Path, *, native_fix=False):
     tests = sdk / "crates/matrix-rtc-call-sdk/tests/e2e_call"
     main = tests / "main.rs"
     # These two test files are the only SDK sources this lab owns.
-    original = subprocess.check_output(["git", "show", "HEAD:crates/matrix-rtc-call-sdk/tests/e2e_call/main.rs"], cwd=sdk)
+    original = subprocess.check_output(["git", "show", "HEAD:crates/matrix-rtc-call-sdk/tests/e2e_call/main.rs"], cwd=sdk, timeout=30)
     patched = original.replace(b"mod provision;", b"mod hermes_gate;\nmod provision;", 1)
     if main.read_bytes() not in (original, patched):
         raise ValueError("SDK test harness has unrelated edits; refusing to overwrite")
@@ -77,7 +77,7 @@ def prepare(root: Path, *, native_fix=False):
     for relative in ("docker-compose.yml", "synapse/homeserver.yaml", "synapse/log.config",
                      "synapse/lk-jwt-appservice.yaml", "livekit/livekit.yaml", "livekit/livekit2.yaml"):
         source = sdk / "demo/backend" / relative
-        text = source.read_text()
+        text = source.read_text(encoding="utf-8-sig")
         text = text.replace("matrix-rtc-backend", PROJECT).replace("6080", "16080").replace("6081", "16081")
         text = text.replace("ghcr.io/element-hq/synapse:v1.161.0", "ghcr.io/element-hq/synapse:v1.164.1")
         text = text.replace("ghcr.io/element-hq/lk-jwt-service:0.8.0", "ghcr.io/element-hq/lk-jwt-service:0.9.0")
@@ -88,7 +88,7 @@ def prepare(root: Path, *, native_fix=False):
                 text = text.replace('"' + port, '"127.0.0.1:' + port)
         target = lab / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text)
+        target.write_text(text, encoding="utf-8")
     return sdk, lab
 
 
@@ -100,9 +100,11 @@ def container(root, *command, format="current"):
     # The user's Rust installation is mounted, with system libraries confined to
     # a disposable builder. userns=host is needed on userns-remapped Docker for
     # host networking; it does not give the process root or the Docker socket.
+    if not hasattr(os, "getuid") or not hasattr(os, "getgid"):
+        raise RuntimeError("The native MatrixRTC Docker lab requires a Unix host")
     home = Path.home()
     return ["docker", "run", "--rm", "--name", "hermes-matrix-rtc-compile", "--userns", "host",
-            "--network", "host", "--user", f"{os.getuid()}:{os.getgid()}", "--cpus", "3", "--memory", "6g",
+            "--network", "host", "--user", f"{os.getuid()}:{os.getgid()}", "--cpus", "3", "--memory", "6g",  # windows-footgun: ok -- hasattr guard above rejects unsupported hosts
             "-e", f"HOME={home}", "-e", f"CARGO_HOME={home}/.cargo", "-e", f"RUSTUP_HOME={home}/.rustup",
             "-e", f"PATH={home}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "-e", "LIVEKIT_SERVICE_URL=http://localhost:16080", "-e", "LIVEKIT_SERVICE_URL_2=http://localhost:16081",
@@ -159,7 +161,7 @@ def main():
                    "lockfile_sha256": hashlib.sha256((root / "matrix-rust-rtc/Cargo.lock").read_bytes()).hexdigest()}
         if args.native_fix:
             receipt["source_patch_sha256"] = hashlib.sha256((ASSETS / "native-delayed-sticky.patch").read_bytes()).hexdigest()
-        (root / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+        (root / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
         run(compose(root, "down", "-v"), timeout=120)
     return 0 if results and all(r["exit_code"] == 0 for r in results) else 1
 

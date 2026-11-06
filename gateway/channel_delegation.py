@@ -43,3 +43,16 @@ def delegation_for_source(config, source):
             delegation.get("model"), delegation.get("provider"), delegation.get("max_concurrent_children"),
         )
     return delegation
+
+
+def resolve_pinned_channel_runtime(runner, session_key, coordinator):
+    # Resolve before the paid default route, which may be exhausted.
+    # A session /model command cannot escape an explicitly reserved route.
+    state = runner._peek_session_state(session_key) if session_key else None
+    override = state.conversation.model_override if state else None
+    if override and (override.get("model", coordinator.model) != coordinator.model
+                     or override.get("provider", coordinator.provider) != coordinator.provider):
+        raise ValueError("This channel is pinned to LongCat on OpenCode Go and has no model fallback.")
+    from gateway.run import _runtime_agent_kwargs
+    runtime = coordinator.main_pool().runtime()
+    return coordinator.model, _runtime_agent_kwargs(runtime)

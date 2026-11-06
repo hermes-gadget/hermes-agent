@@ -123,7 +123,7 @@ class MatrixLiveMixin(LiveBackendMixin):
         except asyncio.CancelledError:
             await link.close()
             raise
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
             self._matrix_live_error = type(exc).__name__
             logger.warning("Matrix live voice unavailable (%s)", type(exc).__name__)
             await link.close()
@@ -226,7 +226,7 @@ class MatrixLiveMixin(LiveBackendMixin):
             except asyncio.CancelledError:
                 state.closed = True
                 raise
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
                 self._matrix_live_error = type(exc).__name__
                 logger.warning("Matrix live call failed (%s)", type(exc).__name__)
                 if not state.closed:

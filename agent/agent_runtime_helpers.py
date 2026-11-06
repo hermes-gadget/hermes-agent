@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- reserved channel credential rotation must update the existing primary-runtime snapshot and bypass ordinary paid fallback at this recovery chokepoint
 """Assorted AIAgent runtime helpers (message repair/sanitization, credential recovery, primary
 runtime restore, prompt-cache policy, client construction, model switching, tool invocation).
 Each function takes the parent ``AIAgent`` as ``agent`` except the stateless message helpers.

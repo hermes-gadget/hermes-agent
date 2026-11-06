@@ -173,19 +173,7 @@ class OwnerObserver:
             await self.enqueue(ident, "input", row, row["project"] + " needs your input. " + (
                 pending.question if pending else "An approval is waiting in its conversation.") + "\n" + row["monitor_url"])
         policy = NotificationPolicy(c.config)
-        if policy.mode(now) == "milestones":
-            for row in snapshot.agents:
-                if row["source"] != "gateway" or row["state"] != "running" or not row["activity"]:
-                    continue
-                prior, announced = self._activity.get(row["agent_id"], ("", 0))
-                if row["activity"] != prior and now - announced >= 120:
-                    key = row["agent_id"].removeprefix("gateway:")
-                    state = c.runner._peek_session_state(key)
-                    generation = state.persistent.run_generation if state else -1
-                    ident = hashlib.sha256(f"{key}:{generation}:{row['activity']}".encode()).hexdigest()
-                    await self.enqueue("activity:" + ident, "milestone", row,
-                        row["project"] + " activity: " + row["activity"])
-                    self._activity[row["agent_id"]] = (row["activity"], now)
+        await self._enqueue_milestones(snapshot, policy, now)
         calls = [a for a in self.calls if a.session.is_live and not a.session.close_requested]
         notices = await asyncio.to_thread(c.db.voice_records, "notice", c.owner_key, limit=500)
         for notice in reversed(notices):
@@ -244,6 +232,22 @@ class OwnerObserver:
             if delivery["status"] == "awaiting_artifact" and delivery["payload"].get("followup"):
                 await complete_handoffs(c, delivery["payload"]["followup"]["request_id"])
 
+    async def _enqueue_milestones(self, snapshot, policy, now):
+        c = self.context
+        if policy.mode(now) == "milestones":
+            for row in snapshot.agents:
+                if row["source"] != "gateway" or row["state"] != "running" or not row["activity"]:
+                    continue
+                prior, announced = self._activity.get(row["agent_id"], ("", 0))
+                if row["activity"] != prior and now - announced >= 120:
+                    key = row["agent_id"].removeprefix("gateway:")
+                    state = c.runner._peek_session_state(key)
+                    generation = state.persistent.run_generation if state else -1
+                    ident = hashlib.sha256(f"{key}:{generation}:{row['activity']}".encode()).hexdigest()
+                    await self.enqueue("activity:" + ident, "milestone", row,
+                        row["project"] + " activity: " + row["activity"])
+                    self._activity[row["agent_id"]] = (row["activity"], now)
+
     async def _deliver_notice(self, notice, deliver):
         await self._deliver_group([notice], deliver)
 
@@ -271,10 +275,10 @@ class OwnerObserver:
         while True:
             try:
                 with _profile_runtime_scope(self.context.home):
-                    self.context.config = read_raw_config() or {}
+                    self.context.config = await asyncio.to_thread(read_raw_config) or {}
                     if any((self.context.config.get(p, {}).get("gpt_live") or {}).get("assistant_enabled") for p in ("matrix", "discord")):
                         await self.tick()
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
                 logger.warning("Live assistant observation unavailable (%s)", type(exc).__name__)
             await asyncio.sleep(10)
 
@@ -296,7 +300,7 @@ async def start_observer(adapter):
     runner = getattr(adapter, "gateway_runner", None)
     if runner is None:
         return None
-    config, home = read_raw_config() or {}, get_hermes_home().resolve()
+    config, home = await asyncio.to_thread(read_raw_config) or {}, get_hermes_home().resolve()
     if not any((config.get(p, {}).get("gpt_live") or {}).get("assistant_enabled") for p in ("matrix", "discord")):
         return None
     if not hasattr(runner, "_live_voice_observers"):

@@ -52,14 +52,15 @@ def _voice_config() -> dict:
     try:
         from hermes_cli.config import load_config
         return load_config().get("voice") or {}
-    except Exception:
+    except Exception as exc:  # health: allow BLE001 -- optional config failure falls back to truncation; log only its type because parser errors can echo credentials
+        logger.warning("Voice summary configuration unavailable (%s)", type(exc).__name__)
         return {}
 
 
 def _extract_text(response) -> str:
     try:
         return (response.choices[0].message.content or "").strip()
-    except Exception:
+    except (AttributeError, IndexError, TypeError):
         return ""
 
 
@@ -117,7 +118,7 @@ async def summarize_for_voice(text: str, *, preserve_style: bool = False) -> str
                 break
             if len(summary) <= max_chars * (1.0 if attempt == 1 else 1.1):
                 return summary
-    except Exception as exc:
-        logger.warning("Voice summary failed (%s); truncating instead", exc)
+    except Exception as exc:  # health: allow BLE001 -- provider boundary falls back to truncation; exception reprs may contain request credentials
+        logger.warning("Voice summary failed (%s); truncating instead", type(exc).__name__)
 
     return truncate_for_voice(summary or text, max_chars)

@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- one owner-controlled trusted cron writer setting belongs in the canonical defaults mapping; comments document its fail-closed grant semantics
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing

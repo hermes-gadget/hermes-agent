@@ -59,7 +59,7 @@ def test_process_lock_spans_profiles_queue_exec_and_crash(job_env, monkeypatch):
 
             refused_cmd, refused_env = _cli(dict(os.environ), "run", "--memory-gib", "3", "--",
                                             sys.executable, "-c", "raise SystemExit(42)")
-            refused = subprocess.run(refused_cmd, env=refused_env, capture_output=True, text=True, timeout=10)
+            refused = subprocess.run(refused_cmd, env=refused_env, capture_output=True, text=True, timeout=10, check=False)
             assert refused.returncode == 75 and "busy" in refused.stderr
 
             queued_cmd, queued_env = _cli(dict(os.environ), "run", "--memory-gib", "6", "--wait-seconds", "10",
@@ -122,7 +122,7 @@ def test_process_lock_spans_profiles_queue_exec_and_crash(job_env, monkeypatch):
 
     failed_cmd, failed_env = _cli(dict(os.environ), "run", "--memory-gib", "3", "--",
                                 sys.executable, "-c", "raise SystemExit(23)")
-    failed = subprocess.run(failed_cmd, env=failed_env, capture_output=True, text=True, timeout=10)
+    failed = subprocess.run(failed_cmd, env=failed_env, capture_output=True, text=True, timeout=10, check=False)
     assert failed.returncode == 23
     with jobs.heavy_job(3 * GIB):
         pass
@@ -148,7 +148,7 @@ def test_preflight_and_health_share_pressure_and_never_launch_when_refused(job_e
             assert run.func(run) == 75
             assert "headroom" in capsys.readouterr().err
 
-    monkeypatch.setattr(jobs, "sample_memory", lambda: {})
+    monkeypatch.setattr(jobs, "sample_memory", dict)
     assert jobs.main(["status"]) == 2
     assert json.loads(capsys.readouterr().out)["pressure"] == "unknown"
     with pytest.raises(jobs.MemoryAdmissionError, match="unavailable"):

@@ -9,7 +9,7 @@ Scope: HermesMind #477 and #471, following the supplied brief.
 
 The base already contains liuhao1024's fix
 `b30862afd30341732f9343d59604fa6075827fba` and subsequent coverage for
-`uv pip install --python /tmp/project/.venv fastapi uvicorn`. Those install forms
+`uv pip install --python $TMPDIR/project/.venv fastapi uvicorn`. Those install forms
 already pass. The remaining real install command `uv add fastapi uvicorn` was
 still rejected by `tools/terminal_tool_guards.py::_has_long_lived_foreground_launch`:
 `uvicorn` matched a server pattern, and `uv add` was absent from the install matcher.
@@ -17,7 +17,7 @@ Reproduction supplied the actual command text to the production guard; no packag
 installation was needed or executed.
 
 The same exemption also hid actual launches when an install-like expression
-occurred later in a segment: `uvicorn app:app --uds /tmp/pip install` and
+occurred later in a segment: `uvicorn app:app --uds $TMPDIR/pip install` and
 `npm run dev -- install` incorrectly passed. The fix recognizes `uv` installs/adds,
 stops at the first install/add verb, and exempts only the subsequent dependency
 arguments. It still checks the preceding invocation and each later shell segment.

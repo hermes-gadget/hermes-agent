@@ -206,7 +206,7 @@ class SessionMaintenanceMixin:
         candidates = [str(row["id"]) for row in self._read_all(
             f"SELECT id FROM sessions WHERE ended_at IS NULL{scope_sql}", scope_params)
             if str(row["id"]) not in excluded]
-        closed: List[str] = []
+        closed: list[str] = []
         for index, chunk in enumerate(_id_chunks(candidates, size=100)):
             if index:
                 # Leave other processes a writer slot instead of immediately reacquiring

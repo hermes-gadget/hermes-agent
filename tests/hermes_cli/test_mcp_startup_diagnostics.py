@@ -100,26 +100,16 @@ def test_failed_server_reason_reaches_session_stderr(mcp_home, monkeypatch, caps
     if surface == "cli":
         mcp_startup.ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), timeout=10)
     else:
-        from hermes_cli import oneshot
+        from types import SimpleNamespace
+        from agent.managed_worker import discover_profile_mcp
+        from hermes_cli.gateway_chat_view import GatewayChatView
 
-        class Agent:
-            def __init__(self, **kwargs):
-                pass
-
-            def run_conversation(self, *args, **kwargs):
-                return {"final_response": "pong", "completed": True}
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr("run_agent.AIAgent", Agent)
-        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_with_fallback",
-                            lambda *a, **kw: ({"api_key": "fixture", "provider": "openrouter"}, None))
-        monkeypatch.setattr(oneshot, "_create_session_db_for_oneshot", lambda: None)
-        assert oneshot.run_oneshot("hello") == 0
+        view = GatewayChatView(None, {"stored_session_id": "s"}, quiet=True)
+        for message in discover_profile_mcp(SimpleNamespace(toolsets=("gmail",))):
+            view._dispatch_event("status.update", "turn", {"kind": "mcp_warning", "text": message})
 
     output = capsys.readouterr()
     assert "Failed to start MCP server 'gmail'" in output.err
     assert "missing-gmail-server" in output.err
     assert "hermes mcp test gmail" in output.err
-    assert output.out == ("pong\n" if surface == "oneshot" else "")
+    assert output.out == ""

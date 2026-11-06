@@ -127,7 +127,7 @@ class JobAttachments:
         target = self.targets.get(ident)
         if target is None:
             raise ValueError("Attach the current execution before controlling it.")
-        source, guard, parent, child = target
+        source, guard, _parent, _child = target
         if not a.authorized_source(source):
             raise ValueError("The job is no longer authorized.")
         if guard:
@@ -184,7 +184,7 @@ class JobAttachments:
             if any(restored[k] != saved["payload"][k] for k in ("session_id", "generation")):
                 raise ValueError("The question's execution changed; inspect its current question.")
             self.targets[native["attachment_id"]] = self.targets[restored["attachment_id"]]
-        source, guard, parent, child = self.authority(native["attachment_id"])
+        source, guard, _parent, child = self.authority(native["attachment_id"])
         if child:
             raise ValueError("Answer this clarification through its owning project conversation.")
         entry = get_pending_for_session(guard.session_key, include_choice_prompts=True)

@@ -592,7 +592,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 _reaped = await asyncio.wait_for(
                     asyncio.shield(_probe_task), timeout=_REAPED_SESSION_PROBE_TIMEOUT,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.debug(
                     "Reaped-session staleness check timed out for %s; leaving live routing unchanged",
                     _quick_key,

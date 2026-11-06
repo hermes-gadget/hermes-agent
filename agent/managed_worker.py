@@ -297,6 +297,8 @@ def discover_profile_mcp(policy):
     from tools.mcp_tool_discovery import discover_mcp_tools
     with suppress_interactive_oauth():
         discover_mcp_tools(allowed_mcp_names=list(policy.toolsets))
+    from hermes_cli.mcp_startup import mcp_startup_failure_messages
+    return mcp_startup_failure_messages(server_filter=policy.toolsets)
 
 
 def retire_agent(agent):
@@ -349,7 +351,8 @@ def execute(frame, channel):
     from gateway.session_policy import restore_policy, policy_scope, register_worker_hooks
     policy = restore_policy(frame['policy'])
     register_worker_hooks(policy)
-    discover_profile_mcp(policy)
+    for message in discover_profile_mcp(policy) or ():
+        channel.send('mcp.warning', message=message)
     from run_agent import AIAgent
     from tools.approval import register_gateway_notify, unregister_gateway_notify
     from tools.approval_context import set_current_session_key

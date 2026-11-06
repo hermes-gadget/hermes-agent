@@ -644,6 +644,14 @@ async def _finalize_managed_refusal(authority, session_id, accepted):
             session_id, None, accepted.get('refused_turn_boundary_row_id'))
 
 
+def _publish_observation_frame(authority, ref, row, frame, policy, worker):
+    from gateway.run_turn_progress import publish_worker_tool_event
+    from gateway.session_mcp_diagnostics import publish_worker_mcp_warning
+    return (publish_worker_tool_event(authority, ref.session_id, row['generation'], frame)
+            or publish_worker_mcp_warning(authority, ref.session_id, row['generation'],
+                                          frame, policy, worker.secrets))
+
+
 async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
@@ -704,7 +712,7 @@ async def execute_managed(authority, ref, row, policy):
             if kind == 'delta' and set(frame) == {'type', 'text'} and isinstance(frame['text'], str):
                 authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
                 continue
-            if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
+            if _publish_observation_frame(authority, ref, row, frame, policy, worker):
                 continue
             if kind == 'result' and set(frame) == {'type', 'result'} and accepted is None:
                 try:

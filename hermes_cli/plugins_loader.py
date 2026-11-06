@@ -299,7 +299,7 @@ def installed_in_selected_environment(requirements: list[str]) -> bool:
 
 
 class PluginLoaderMixin:
-    def reload_plugin(self, name: str) -> Dict[str, Any]:
+    def reload_plugin(self, name: str) -> dict[str, Any]:
         """Unload and re-register one plugin; hooks live now, prompt/schema changes next session."""
         from hermes_cli.plugins_reload import reload_plugin
         return reload_plugin(self, name)

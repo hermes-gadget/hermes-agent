@@ -114,7 +114,7 @@ def test_channel_real_agents_use_distinct_keys_and_cannot_fall_back(tmp_path, mo
 def test_channel_reservations_queue_cancel_and_wait_for_deferred_exit_without_profile_leaks(tmp_path, monkeypatch):
     home_a, _, config, source = _setup(tmp_path, monkeypatch, "https://opencode.ai/zen/go/v1", "a")
     coordinator = credential_coordinator_for_source(config, source)
-    home_b, _, config_b, source_b = _setup(tmp_path, monkeypatch, "https://opencode.ai/zen/go/v1", "b")
+    _home_b, _, config_b, source_b = _setup(tmp_path, monkeypatch, "https://opencode.ai/zen/go/v1", "b")
     other = credential_coordinator_for_source(config_b, source_b)
     assert other is not coordinator
     assert other.main_pool().current().runtime_api_key == "b-main"

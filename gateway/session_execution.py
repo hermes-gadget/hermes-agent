@@ -158,6 +158,13 @@ class GatewaySessionAgentMixin:
         from gateway.session_policy import policy_for_source
         from gateway.session_worker_construct import session_prefill
         policy = policy_for_source(runner, src)
+        if policy and policy.platform == 'cli':
+            from gateway.session_finite import finite_turn_required
+            from gateway.warning_notifications import DiagnosticText
+            from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+            ensure_mcp_discovery_before_agent_build(
+                logger=logger, single_query=bool(finite_turn_required()),
+                report_error=lambda message: self._status_callback_sync('mcp_warning', DiagnosticText(message)))
         return ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
             max_iterations=max_iterations, quiet_mode=not bool(policy and policy.verbose), verbose_logging=False,

@@ -117,7 +117,7 @@ print('RESULT=' + json.dumps(dict(probe=probe, started=started, served=served,
 '''
     result = subprocess.run([sys.executable, "-I", "-c",
                              f"completion_verdict={complete!r};import sys; sys.path.insert(0, '.');" + driver],
-                            cwd=root, env=env, capture_output=True, text=True, timeout=120)
+                            cwd=root, env=env, capture_output=True, text=True, timeout=120, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     data = json.loads(next(line.removeprefix("RESULT=") for line in result.stdout.splitlines()
                            if line.startswith("RESULT=")))

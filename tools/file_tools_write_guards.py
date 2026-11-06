@@ -286,7 +286,8 @@ def _trusted_cron_instruction_writer(task_id: str) -> str | None:
         if not isinstance(trusted, list):
             return None
         return job_id if job_id in {str(t) for t in trusted if t} else None
-    except Exception:
+    except Exception as exc:  # health: allow BLE001 -- this authorization probe must fail closed; config parser errors may include secret values
+        logging.getLogger(__name__).warning("Trusted cron writer lookup failed (%s)", type(exc).__name__)
         return None
 
 

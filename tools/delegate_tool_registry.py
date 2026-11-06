@@ -266,8 +266,8 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
         activity = None
         try:
             activity = r.get("agent").get_activity_summary()
-        except Exception:
-            pass
+        except Exception as exc:  # health: allow BLE001 -- optional child sampler must not hide ownership or expose private tool arguments
+            logger.debug("Child activity sampling failed (%s)", type(exc).__name__)
         if isinstance(activity, dict):
             current_tool = activity.get("current_tool")
             if "current_tool" in activity and (current_tool is None or isinstance(current_tool, str)):

@@ -112,7 +112,7 @@ class LiveRecoveryMixin:
                     history = await self.assistant.prepare()
                     try:
                         await self._open_connection(history)
-                    except Exception as exc:
+                    except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
                         code = getattr(getattr(exc, "response", None), "status_code", None)
                         if self._start_error or code in {400, 401, 403, 404}:
                             break

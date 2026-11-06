@@ -494,7 +494,8 @@ class PluginDispatchMixin:
         self, hook_name: str, cb: Callable, kwargs: dict[str, Any], timeout: float
     ) -> Any:
         # Keep async callbacks on the caller's loop; a synchronous callback must not block it.
-        if not (inspect.iscoroutinefunction(cb) or inspect.iscoroutinefunction(getattr(cb, "__call__", None))):
+        if not (inspect.iscoroutinefunction(cb) or inspect.iscoroutinefunction(getattr(cb, "__call__", None)  # noqa: B004 -- inspecting whether a callable instance has an async __call__, not testing callability
+                    )):
             return await asyncio.to_thread(self._run_hook_callback_bounded, hook_name, cb, kwargs, timeout)
         key, run = self._begin_hook_run(hook_name, cb, kwargs)
         if run is _HOOK_DISABLED or run is _HOOK_SKIPPED:

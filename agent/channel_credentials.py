@@ -176,7 +176,7 @@ class ChannelCredentialPool:
 
         entry = self.current()
         if entry is None:
-            return None
+            return
         pool = load_pool(self.provider)
         if kwargs.get("status_code") in (401, 403):
             pool.mark_exhausted_and_rotate(**{**kwargs, "credential_id": entry.id})
@@ -189,7 +189,7 @@ class ChannelCredentialPool:
                 # one-hour bench does not describe its retry options.
                 context.setdefault("reset_at", time.time() + _exhausted_ttl(429, sole_credential=True))
                 pool._cool_down_model(entry, self.model, context, kwargs.get("failure_reason"))
-        return None
+        return
 
     def record_success(self, *, api_key):
         """A successful retry retires only this key's observed LongCat cooldown."""

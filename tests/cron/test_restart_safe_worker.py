@@ -1374,7 +1374,7 @@ def test_external_worker_rides_out_transient_locked_ledger(tmp_path, monkeypatch
     adoption is retried on lock/busy errors before the worker refuses ownership."""
     import sqlite3
 
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     payload = tmp_path / "payload.json"
     ack = tmp_path / "exec-1.ready"
@@ -1407,7 +1407,7 @@ def test_external_worker_adopt_retry_is_bounded_and_lock_only(tmp_path, monkeypa
     the old fail-closed behaviour, and non-lock errors propagate immediately."""
     import sqlite3
 
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     def write_payload():
         payload = tmp_path / "payload.json"
@@ -1453,7 +1453,7 @@ def test_dispatch_handoff_rides_out_transient_locked_ledger(monkeypatch):
     whole jobs on 2026-10-07/09)."""
     import sqlite3
 
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     calls = {"n": 0}
 
@@ -1475,7 +1475,7 @@ def test_dispatch_handoff_retry_is_bounded_and_lock_only(monkeypatch):
     non-lock errors propagate immediately."""
     import sqlite3
 
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     lock_calls = {"n": 0}
 
@@ -1509,7 +1509,7 @@ def test_execution_creation_rides_out_transient_locked_ledger(monkeypatch):
     failed: database is locked" skipped ajax-watch/ajax-fetch on 2026-10-14)."""
     import sqlite3
 
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     calls = {"n": 0}
 
@@ -1531,7 +1531,7 @@ def test_execution_creation_retry_is_bounded_and_lock_only(monkeypatch):
     non-lock errors propagate immediately."""
     import sqlite3
 
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     lock_calls = {"n": 0}
 
@@ -1564,7 +1564,7 @@ def test_execution_start_rides_out_transient_locked_ledger(monkeypatch):
     the run's catch-all and recording a failure for a run that never started."""
     import sqlite3
 
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     calls = {"n": 0}
 
@@ -1591,7 +1591,7 @@ def test_execution_finish_rides_out_transient_locked_ledger(monkeypatch):
     2026-10-14)."""
     import sqlite3
 
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     calls = {"n": 0}
 
@@ -1613,7 +1613,7 @@ def test_execution_finish_retry_is_bounded_and_lock_only(monkeypatch):
     non-lock errors propagate immediately."""
     import sqlite3
 
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     lock_calls = {"n": 0}
 

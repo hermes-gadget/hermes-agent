@@ -25,11 +25,11 @@ def main():
     if args.observations is None or args.min_repeats < 1:
         parser.error("provide --observations and a positive --min-repeats")
     def read(path):
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path else []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()] if path else []
     report = build_report(read(args.observations), read(args.usage), require_complete=args.require_complete, min_repeats=args.min_repeats)
     content = json.dumps(report, indent=2) + "\n"
     if args.output:
-        args.output.write_text(content)
+        args.output.write_text(content, encoding="utf-8")
     print(content, end="")
     return 0 if report["passed"] else 1
 

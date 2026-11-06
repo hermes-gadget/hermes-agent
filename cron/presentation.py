@@ -108,5 +108,5 @@ def queued(job: dict, target: dict, decision: dict) -> None:
         update_job(job["id"], {"last_delivery_queued": value})
     except Exception:
         logger.warning(
-            "Could not persist queued presentation for job %s", job.get("id")
+            "Could not persist queued presentation for job %s", job.get("id"), exc_info=True
         )

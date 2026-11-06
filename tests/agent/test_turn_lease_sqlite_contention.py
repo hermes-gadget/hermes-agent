@@ -12,12 +12,12 @@ import pytest
 
 from agent.turn_facade_lease import DurableTurnLease
 from hermes_state import SessionDB
-from hermes_state_errors import SessionTurnLeaseLostError
+from hermes_state_errors import SessionTurnLeaseLostError, is_sqlite_lock_error
 
 
 @pytest.mark.parametrize("takeover", [False, True], ids=["transient-lock", "lease-taken-over"])
 def test_turn_lease_rechecks_ownership_after_a_real_22_second_writer_stall(
-    tmp_path, monkeypatch, takeover, caplog,
+    tmp_path, monkeypatch, takeover,
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     with closing(SessionDB()) as db, closing(sqlite3.connect(db.db_path, isolation_level=None)) as writer:
@@ -31,10 +31,16 @@ def test_turn_lease_rechecks_ownership_after_a_real_22_second_writer_stall(
         lease.turn_active = True
         attempted = threading.Event()
         refresh = db.refresh_session_turn_lease
+        lock_failures = []
+        original_deadline = lease._authority_deadline
 
         def actual_refresh(*args, **kwargs):
             attempted.set()
-            return refresh(*args, **kwargs)
+            try:
+                return refresh(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                lock_failures.append(exc)
+                raise
 
         monkeypatch.setattr(db, "refresh_session_turn_lease", actual_refresh)
         writer.execute("BEGIN IMMEDIATE")
@@ -48,11 +54,19 @@ def test_turn_lease_rechecks_ownership_after_a_real_22_second_writer_stall(
             try:
                 assert attempted.wait(10)
                 # Production's routine 20s write patience expires before this transaction commits.
-                threading.Event().wait(22)
+                threading.Event().wait(22)  # health: allow HX013 -- a real writer stall must outlast the former 20-second retry window
             finally:
                 writer.commit()
             result = renewal.result(timeout=40)
-        assert "retrying within" in caplog.text, "the real write-patience exhaustion was not exercised"
+        assert lock_failures and all(is_sqlite_lock_error(exc) for exc in lock_failures)
+        # Upstream retries on the next scheduled tick, bounded by the committed authority
+        # deadline. A missed tick cannot extend ownership or publish stale results.
+        assert result is None and not interrupts
+        assert lease._authority_deadline == original_deadline
+        if takeover:
+            with pytest.raises(SessionTurnLeaseLostError):
+                db.append_message("live", "tool", "stale before next tick", turn_lease_holder=holder)
+        result = lease.refresh_tick()
         if takeover:
             assert result is False
             assert len(interrupts) == 1
@@ -94,7 +108,7 @@ def test_turn_lease_ttl_starts_after_the_write_lock_wait(tmp_path, monkeypatch, 
             pending = workers.submit(attempt, "live", holder, ttl_seconds=ttl)
             try:
                 assert entered_write.wait(10)
-                threading.Event().wait(3)
+                threading.Event().wait(3)  # health: allow HX013 -- elapsed write-lock time is the behavior under test; lease TTL must start after it
             finally:
                 released_at = time.time()
                 writer.commit()

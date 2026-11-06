@@ -66,7 +66,7 @@ def load_gpt_live_config(raw: dict | None = None) -> GptLiveConfig:
         if cfg.enabled and not (cfg.voice_channel_id and cfg.user_id):
             raise ValueError("voice_channel_id and user_id are required")
         return cfg
-    except Exception as exc:
+    except (ValueError, TypeError, AttributeError) as exc:
         logger.warning("Invalid discord.gpt_live configuration; feature disabled (%s)", type(exc).__name__)
         return GptLiveConfig()
 

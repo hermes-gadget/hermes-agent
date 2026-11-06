@@ -67,7 +67,7 @@ def _deny_glob_matches(candidate: str, pattern: str) -> bool:
         return fnmatch.fnmatchcase(candidate, pattern.lower())
     try:
         rx = _deny_glob_pattern_regex(pattern)
-    except Exception:  # pragma: no cover — regex build must never gate a block
+    except re.error:  # pragma: no cover — invalid regex must never gate a block
         return fnmatch.fnmatchcase(candidate, pattern.lower())
     if _deny_pattern_requires_same_region(pattern):
         return any(

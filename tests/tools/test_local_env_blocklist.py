@@ -7,11 +7,11 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.tools._child_env_fixtures import child_env, observe_child, observe_terminal
+from tests.tools._child_env_fixtures import child_env as child_env, observe_child, observe_terminal  # noqa: PLC0414 -- explicit pytest fixture re-export prevents false F811 on injected arguments
 from tools.environments import local
 from tools.environments import local_pythonpath as pp
 from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
@@ -442,7 +442,7 @@ def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, 
     assert dict(os.environ) == before
 
 
-def test_local_terminal_drops_pythonpath_from_process_and_login_snapshot(child_env, monkeypatch):
+def test_local_terminal_drops_configured_and_login_pythonpath(child_env, monkeypatch):
     """Neither backend PYTHONPATH nor one exported by a login profile may cross into commands."""
     inherited = str(child_env / "foreign-site-packages")
     monkeypatch.setenv("PYTHONPATH", inherited)

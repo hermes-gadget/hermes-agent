@@ -132,7 +132,7 @@ def main() -> int:
         print(f"GPT-Live probe failed: {exc}", file=sys.stderr)
     except TimeoutError:
         print("GPT-Live probe timed out; startup or final usage is unconfirmed.", file=sys.stderr)
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
         # WebSocket exception reprs may include authentication headers.
         status = getattr(getattr(exc, "response", None), "status_code", None)
         detail = f"HTTP {status}" if status is not None else type(exc).__name__

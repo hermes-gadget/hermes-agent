@@ -18,9 +18,10 @@ import pytest
 async def test_gateway_startup_serves_quarantine_health_and_targeted_reload(
     tmp_path, monkeypatch, caplog, callback_kind,
 ):
-    import hermes_cli.plugins as plugins
+    from hermes_cli import plugins
     from gateway.control_socket import query_gateway_control
-    from gateway.run import _profile_runtime_scope, _start_gateway_start_control_socket
+    from gateway.run import _profile_runtime_scope
+    from gateway.run_bootstrap import _start_gateway_start_control_socket
     from gateway.run_plugin_rewire import GatewayPluginRewireMixin
 
     home = tmp_path / "home"
@@ -71,9 +72,14 @@ async def test_gateway_startup_serves_quarantine_health_and_targeted_reload(
     class Runner(GatewayPluginRewireMixin):
         config = SimpleNamespace(multiplex_profiles=False)
         adapters = {"fixture": Adapter()}
+        session_runtime_descriptor = {}
+        session_ticket_store = None
 
         def served_profile_names(self):
             return ["default"]
+
+        async def reconcile_served_profiles(self, **kwargs):
+            return {"served_profiles": self.served_profile_names()}
 
     with _profile_runtime_scope(home, hydrate_secrets=False):
         manager = plugins.get_plugin_manager()
@@ -110,8 +116,9 @@ async def test_gateway_startup_serves_quarantine_health_and_targeted_reload(
             old.release.set()
             assert await asyncio.to_thread(old.finished.wait, 5)
             # Completion must update diagnostics without clearing the dispatcher's quarantine.
+            deadline = asyncio.get_running_loop().time() + 5
             async with asyncio.timeout(5):
-                while True:
+                while asyncio.get_running_loop().time() < deadline:
                     health = (await query("status"))["plugin_health"][manager.scope_key]
                     if not health["stuck_hooks"]:
                         break

@@ -93,6 +93,30 @@ def _recover_or_remember_model(runner, skey, model):
 
 
 class GatewayTurnPrepareMixin:
+    def _resolve_enabled_toolsets_for_source(
+        self, user_config: dict, source: SessionSource, platform_key: str,
+    ) -> list:
+        """Enabled toolsets for an agent run, honoring an adapter ``toolsets_for_source()`` override
+        validated through the SAME ``_get_platform_tools`` path (unknown / platform-restricted
+        toolsets dropped, not trusted)."""
+        from hermes_cli.tools_config import _get_platform_tools
+        try:
+            adapter = self._delivery_adapter_for(source)
+            override = adapter.toolsets_for_source(source) if adapter is not None else None
+            extension = getattr(adapter, "additional_toolsets_for_source", None)
+            extra = extension(source) if callable(extension) else []
+            if isinstance(extra, list) and extra:
+                override = list(override or _get_platform_tools(user_config, platform_key)) + extra
+        except Exception:
+            logger.debug("Platform toolset override unavailable; using configured toolsets", exc_info=True)
+            override = None
+        if override and isinstance(override, list):
+            pts = dict(user_config.get("platform_toolsets") or {})
+            pts[platform_key] = [str(x) for x in override]
+            user_config = {**user_config, "platform_toolsets": pts}
+        return sorted(_get_platform_tools(user_config, platform_key))
+
+    # health: allow CC -- one additional reserved-channel branch must precede upstream paid fallback; route validation lives in channel_delegation
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None, fallback: bool = True,
@@ -117,16 +141,8 @@ class GatewayTurnPrepareMixin:
         from gateway.channel_delegation import credential_coordinator_for_source
         coordinator = credential_coordinator_for_source(getattr(self, "config", None), source)
         if coordinator is not None:
-            # Resolve before the paid default route, which may be exhausted.
-            # A session /model command cannot escape an explicitly reserved route.
-            state = self._peek_session_state(skey) if skey else None
-            override = state.conversation.model_override if state else None
-            if override and (override.get("model", coordinator.model) != coordinator.model
-                             or override.get("provider", coordinator.provider) != coordinator.provider):
-                raise ValueError("This channel is pinned to LongCat on OpenCode Go and has no model fallback.")
-            from gateway.run import _runtime_agent_kwargs
-            runtime = coordinator.main_pool().runtime()
-            return coordinator.model, _runtime_agent_kwargs(runtime)
+            from gateway.channel_delegation import resolve_pinned_channel_runtime
+            return resolve_pinned_channel_runtime(self, skey, coordinator)
         model = _resolve_gateway_model(user_config)
         if skey:
             self._rehydrate_session_model_override(skey)

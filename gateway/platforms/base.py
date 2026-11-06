@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- private stream filtering, voice observation/TTS and exact execution ownership hooks must run at the shared upstream display/admission/completion boundaries
 """Base platform adapter interface; every platform adapter inherits from BasePlatformAdapter."""
 
 import asyncio
@@ -4794,7 +4795,7 @@ class BasePlatformAdapter(ABC):
         (default); validated via ``_get_platform_tools`` (webhook adapter pins per-route)."""
         return None
 
-    def additional_toolsets_for_source(self, source: "SessionSource") -> List[str]:
+    def additional_toolsets_for_source(self, source: "SessionSource") -> list[str]:
         """Stable platform capabilities added to configured tools; validated by the normal resolver."""
         return []
 

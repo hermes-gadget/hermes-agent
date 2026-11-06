@@ -36,9 +36,7 @@ def load_matrix_live_config(raw=None):
                     raise ValueError(f"invalid {field.name}")
                 if field.name == "prime_ms" and value > 2000:
                     raise ValueError("prime_ms exceeds the bounded playback buffer")
-            elif not isinstance(value, str):
-                raise ValueError(f"invalid {field.name}")
-            elif field.name not in {"user_id", "helper_path", "ca_file"} and not value.strip():
+            elif not isinstance(value, str) or field.name not in {"user_id", "helper_path", "ca_file"} and not value.strip():
                 raise ValueError(f"invalid {field.name}")
             values[field.name] = value
         cfg = MatrixLiveConfig(**values)

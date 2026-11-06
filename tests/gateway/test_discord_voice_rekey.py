@@ -41,6 +41,7 @@ def _make_conn(
 ):
     return SimpleNamespace(
         secret_key=secret_key,
+        mode="aead_xchacha20_poly1305_rtpsize",
         dave_session=dave_session,
         dave_protocol_version=dave_protocol_version,
         dave_downgraded=dave_downgraded,

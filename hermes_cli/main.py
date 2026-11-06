@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# health: allow FILE_LINES -- register the private resources parser and handle SourceHealthError in the existing updater receipt finalization path; three integration lines, implementation stays in its owner modules
 """Hermes CLI - Main entry point.
 
 Usage:

@@ -13,6 +13,15 @@ from .projects import discord_link
 logger = logging.getLogger(__name__)
 
 
+def _activity_summary(agent):
+    try:
+        summary = agent.get_activity_summary() if callable(getattr(agent, "get_activity_summary", None)) else {}
+    except Exception as exc:  # health: allow BLE001 -- a foreign sampler cannot hide other agents; exception text may include private activity
+        logger.debug("Voice activity sampling failed (%s)", type(exc).__name__)
+        summary = {}  # Foreign/initializing samplers must not hide other agents.
+    return summary
+
+
 @dataclass
 class AgentStatus:
     agent_id: str
@@ -85,10 +94,7 @@ class FleetStatusProvider:
             sid = getattr(entry, "session_id", "") or ""
             agent = getattr(getattr(state, "turn", None), "agent", None)
             platform = source.platform.value
-            try:
-                summary = agent.get_activity_summary() if callable(getattr(agent, "get_activity_summary", None)) else {}
-            except Exception:
-                summary = {}  # Foreign/initializing samplers must not hide other agents.
+            summary = _activity_summary(agent)
             activity = summary.get("description", "")
             queue = getattr(getattr(state, "conversation", None), "queued_events", [])
             pending = getattr(getattr(state, "persistent", None), "approvals", None)
@@ -142,6 +148,12 @@ class FleetStatusProvider:
                     child_row.controls = ()
                 rows.append(child_row)
         coverage = {"gateway": "current", "native_workers": "current", "operations_feed": "not_configured"}
+        await self._append_external_rows(rows, channel_agents, coverage, service, now)
+        result = FleetSnapshot([asdict(r) for r in rows], now, coverage)
+        self._last = result
+        return result
+
+    async def _append_external_rows(self, rows, channel_agents, coverage, service, now):
         url = (service.config.get("voice", {}).get("assistant") or {}).get("fleet_url", "")
         if url:
             if self._external_task is None and now - self._external_at >= 10:
@@ -175,9 +187,6 @@ class FleetStatusProvider:
                 external = [r for r in external if r.agent_id.removeprefix("operations:w:sub:") not in native_ids]
                 rows.extend(external)
                 coverage["unattributed_workers"] = unattributed
-        result = FleetSnapshot([asdict(r) for r in rows], now, coverage)
-        self._last = result
-        return result
 
     @staticmethod
     def _read_external(url):
@@ -242,7 +251,7 @@ class FleetStatusProvider:
                     await self.assistant.session._commentary(None, f"{labels} needs your input in its project conversation.")
                     announced |= {r["agent_id"] for r in new_waiting}
                 announced &= waiting
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- optional observation must remain isolated; log only type to protect private session/provider details
                 logger.debug("Fleet observation failed (%s)", type(exc).__name__)
                 if previous != "unavailable":
                     await self.assistant.quiet("Fleet observation unavailable. Prior agent states may be stale; do not guess.")

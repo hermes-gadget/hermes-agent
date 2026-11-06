@@ -22,13 +22,14 @@ def main():
     target = (args.target_dir or work / "target").expanduser().resolve()
     target.mkdir(parents=True, exist_ok=True)
     source = Path(__file__).resolve().parents[1] / "plugins/platforms/matrix/native"
-    subprocess.run(["docker", "build", "-t", lab.BUILDER, str(lab.ASSETS)], check=True)
+    subprocess.run(["docker", "build", "-t", lab.BUILDER, str(lab.ASSETS)], check=True, timeout=1800)
     with tempfile.TemporaryDirectory(prefix="matrix-call-src-", dir=work) as temporary:
         root = Path(temporary)
         sdk, _ = lab.prepare(root, native_fix=True)
         shutil.copytree(source, sdk / "hermes-call-helper")
         manifest = sdk / "Cargo.toml"
-        manifest.write_text(manifest.read_text().replace('members = [', 'members = [\n    "hermes-call-helper",', 1))
+        manifest_text = manifest.read_text(encoding="utf-8-sig")
+        manifest.write_text(manifest_text.replace('members = [', 'members = [\n    "hermes-call-helper",', 1), encoding="utf-8")
         if not args.resolve:
             shutil.copyfile(source / "Cargo.lock", sdk / "Cargo.lock")
         command = ["cargo", "build", "-p", "hermes-matrix-call"]
@@ -43,7 +44,7 @@ def main():
             subprocess.run(invocation, check=True, timeout=5400)
         except BaseException:
             subprocess.run(["docker", "rm", "-f", container_name],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=30)
             raise
         shutil.copyfile(sdk / "Cargo.lock", work / "Cargo.lock")
         binary = work / "hermes-matrix-call"

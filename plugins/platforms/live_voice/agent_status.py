@@ -46,8 +46,8 @@ class AgentRoster:
         if db is not None:
             try:
                 return (db.resolve_resume_session_id(first) or first) == (db.resolve_resume_session_id(second) or second)
-            except Exception:
-                pass
+            except Exception as exc:  # health: allow BLE001 -- optional owner lookup must fail closed without exposing another session
+                logger.debug("Voice conversation lookup unavailable (%s)", type(exc).__name__)
         return False
 
     def reset_for(self, session_id):
@@ -247,7 +247,7 @@ class AgentStatusFeed:
         get = getattr(self.session.adapter, '_gpt_live_agent_roster', None)
         try:
             return get(self.session, observe=observe) if callable(get) else None
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- optional observation must remain isolated; log only type to protect private session/provider details
             logger.debug('Agent roster scope unavailable (%s)', type(exc).__name__)
             return None
 
@@ -292,7 +292,8 @@ class AgentStatusFeed:
             snapshot = await asyncio.wait_for(asyncio.shield(self.read_task), 3)
         except TimeoutError:
             snapshot = None  # Keep waiting for this read, never fan out stuck threads.
-        except Exception:
+        except Exception as exc:  # health: allow BLE001 -- observational sampler failure must not abort the call or expose its private fields
+            logger.debug("Voice roster sampling failed (%s)", type(exc).__name__)
             if read_roster.read_task is self.read_task:
                 read_roster.read_task = None
             self.read_task = None
@@ -358,7 +359,7 @@ class AgentStatusFeed:
                     await asyncio.wait_for(self.wake.wait(), self.POLL_SECONDS)
                 except TimeoutError:
                     pass
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- optional observation must remain isolated; log only type to protect private session/provider details
             logger.warning('GPT-Live agent status feed failed (%s)', type(exc).__name__)
             self.session._ended('transport')
         # shield keeps a slow native read attached to its roster. A redial reuses

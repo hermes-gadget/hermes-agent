@@ -1,6 +1,6 @@
 """Owner-configured unsolicited notices; direct replies retain normal delivery."""
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from zoneinfo import ZoneInfo
 
 
@@ -54,7 +54,7 @@ async def configure_notifications(assistant, args, did):
     expiry = None
     if until:
         expiry = datetime.fromisoformat(until)
-        if not expiry.tzinfo or expiry <= datetime.now(timezone.utc) or mode is None:
+        if not expiry.tzinfo or expiry <= datetime.now(UTC) or mode is None:
             raise ValueError("Temporary modes require a future timestamp with a timezone and a mode.")
     def configure():
         path = assistant.session.home / "config.yaml"
@@ -73,4 +73,4 @@ async def configure_notifications(assistant, args, did):
     if assistant.observer is not None:
         assistant.observer.context.config = raw
     return {"status": "configured" if mode else "current", "notifications": settings,
-            "effective_mode": NotificationPolicy(raw).mode(datetime.now(timezone.utc).timestamp())}
+            "effective_mode": NotificationPolicy(raw).mode(datetime.now(UTC).timestamp())}

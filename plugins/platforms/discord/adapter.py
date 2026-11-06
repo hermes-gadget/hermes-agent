@@ -939,13 +939,48 @@ class VoiceReceiver:
 
     # --- Packet handler (called from SocketReader thread) ---
 
+    def _refresh_packet_credentials(self):
+        conn = self._vc._connection
+        if bytes(conn.secret_key) != self._secret_key or conn.dave_session is not self._dave_session:
+            self.refresh_credentials("packet credential change")
+
+    def _stream_packet_allowed(self, ssrc):
+        if not self._stream_callback:
+            return True
+        # Never attribute an unknown sender's first packet to the allowed user.
+        with self._lock:
+            user_id = self._ssrc_to_user.get(ssrc)
+            if user_id not in self._stream_user_ids:
+                self._stream_stats["unknown_ssrc" if user_id is None else "other_user"] += 1
+                return False
+            self._stream_stats["allowed_packets"] += 1
+        return True
+
+    def _strip_packet_padding(self, decrypted, has_padding, ssrc):
+        # Strip RTP padding (RFC 3550 §5.1): last payload byte is the count; leaving it corrupts DAVE/Opus.
+        if has_padding:
+            if not decrypted:
+                if self._packet_debug_count <= 10:
+                    logger.warning("RTP padding bit set but no payload (ssrc=%d)", ssrc)
+                return
+            pad_len = decrypted[-1]
+            if pad_len == 0 or pad_len > len(decrypted):
+                if self._packet_debug_count <= 10:
+                    logger.warning(
+                        "Invalid RTP padding length %d for payload size %d (ssrc=%d)",
+                        pad_len, len(decrypted), ssrc,
+                    )
+                return
+            decrypted = decrypted[:-pad_len]
+            if not decrypted:
+                return
+        return decrypted
+
     def _on_packet(self, data: bytes):
         if not self._running or self._paused:
             return
 
-        conn = self._vc._connection
-        if (bytes(conn.secret_key) != self._secret_key or conn.dave_session is not self._dave_session):
-            self.refresh_credentials("packet credential change")
+        self._refresh_packet_credentials()
 
         # One consistent credential generation for this packet — a refresh
         # on another thread swaps the whole tuple, never half of it.
@@ -971,15 +1006,8 @@ class VoiceReceiver:
         _, _, seq, _timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
         if ssrc == self._vc._connection.ssrc:
             return
-        if self._stream_callback:
-            # Never infer an unknown SSRC from the allowlist: another member's
-            # first packet could otherwise be attributed to the configured user.
-            with self._lock:
-                user_id = self._ssrc_to_user.get(ssrc)
-                if user_id not in self._stream_user_ids:
-                    self._stream_stats["unknown_ssrc" if user_id is None else "other_user"] += 1
-                    return
-                self._stream_stats["allowed_packets"] += 1
+        if not self._stream_packet_allowed(ssrc):
+            return
         # Calculate dynamic RTP header size (RFC 9335 / rtpsize mode)
         cc = first_byte & 0x0F  # CSRC count
         has_extension = bool(first_byte & 0x10)  # extension bit
@@ -1039,23 +1067,9 @@ class VoiceReceiver:
         # Skip encrypted extension data to get the actual opus payload
         if ext_data_len and len(decrypted) > ext_data_len:
             decrypted = decrypted[ext_data_len:]
-        # Strip RTP padding (RFC 3550 §5.1): last payload byte is the count; leaving it corrupts DAVE/Opus.
-        if has_padding:
-            if not decrypted:
-                if self._packet_debug_count <= 10:
-                    logger.warning("RTP padding bit set but no payload (ssrc=%d)", ssrc)
-                return
-            pad_len = decrypted[-1]
-            if pad_len == 0 or pad_len > len(decrypted):
-                if self._packet_debug_count <= 10:
-                    logger.warning(
-                        "Invalid RTP padding length %d for payload size %d (ssrc=%d)",
-                        pad_len, len(decrypted), ssrc,
-                    )
-                return
-            decrypted = decrypted[:-pad_len]
-            if not decrypted:
-                return
+        decrypted = self._strip_packet_padding(decrypted, has_padding, ssrc)
+        if decrypted is None:
+            return
         # --- DAVE E2EE decrypt ---
         if dave_session:
             with self._lock:

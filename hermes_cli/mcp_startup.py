@@ -321,26 +321,9 @@ def ensure_mcp_discovery_before_agent_build(
         start_background_mcp_discovery(logger=logger, thread_name=thread_name)
         timeout = _resolve_discovery_timeout(timeout, single_query=single_query)
         wait_for_mcp_discovery(timeout=timeout, single_query=single_query)
-        if not _has_configured_mcp_servers():
-            return
-        from tools.mcp_tool_discovery import get_mcp_status
-
-        in_flight = mcp_discovery_in_flight()
-        timeout_key = "mcp_single_query_discovery_timeout" if single_query else "mcp_discovery_timeout"
-        for entry in get_mcp_status():
-            if entry.get("disabled") or _discovery_registered_servers([entry]):
-                continue
-            name = entry["name"]
-            if _mcp_server_filter is not None and name not in _mcp_server_filter:
-                continue
-            reason = entry.get("error") or (
-                f"discovery did not finish within the {timeout:g}s startup wait"
-                if in_flight else "discovery finished without registering the server")
-            remedy = f"Run `hermes mcp test {shlex.quote(name)}` to diagnose it."
-            if in_flight:
-                remedy += f" For a slow cold start, increase `{timeout_key}` in config.yaml."
-            messages.append(f"Failed to start MCP server {name!r} for this session: {reason}. "
-                            f"{remedy} Start a new session after resolving it.")
+        messages = mcp_startup_failure_messages(
+            timeout=timeout, in_flight=mcp_discovery_in_flight(),
+            single_query=single_query, server_filter=_mcp_server_filter)
     except Exception as exc:
         logger.debug("MCP discovery readiness check failed before agent build", exc_info=True)
         messages.append(f"MCP discovery failed before session startup: {exc}. Run `hermes mcp list` "
@@ -354,3 +337,36 @@ def ensure_mcp_discovery_before_agent_build(
             print(message, file=sys.stderr, flush=True)
         else:
             report_error(message)
+
+
+def mcp_startup_failure_messages(*, timeout: float = 0, in_flight: bool = False,
+                                 single_query: bool = False, server_filter=None) -> list[str]:
+    """Unavailable servers in the owning profile, shared by local and managed startup.
+
+    Discovery remains owned by the caller: a managed worker has already populated
+    its own registry and must not launch a second discovery thread here.
+    """
+    from agent.redact import redact_sensitive_text
+    from tools.mcp_tool_discovery import get_mcp_status
+
+    messages = []
+    selected = set(server_filter or ())
+    if selected.intersection({'all', '*'}):
+        selected.clear()
+    timeout_key = 'mcp_single_query_discovery_timeout' if single_query else 'mcp_discovery_timeout'
+    for entry in get_mcp_status():
+        if entry.get('disabled') or _discovery_registered_servers([entry]):
+            continue
+        name = entry['name']
+        if selected and name not in selected:
+            continue
+        reason = entry.get('error') or (
+            f'discovery did not finish within the {timeout:g}s startup wait'
+            if in_flight else 'discovery finished without registering the server')
+        remedy = f'Run `hermes mcp test {shlex.quote(name)}` to diagnose it.'
+        if in_flight:
+            remedy += f' For a slow cold start, increase `{timeout_key}` in config.yaml.'
+        message = (f'Failed to start MCP server {name!r} for this session: {reason}. '
+                   f'{remedy} Start a new session after resolving it.')
+        messages.append(redact_sensitive_text(' '.join(message.split()), force=True))
+    return messages

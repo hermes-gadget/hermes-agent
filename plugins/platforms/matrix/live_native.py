@@ -96,7 +96,7 @@ class NativeCallLink:
                     raise ValueError("invalid native call packet type")
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- SDK/callback boundary records sanitized failure and preserves recovery; exception reprs can expose auth or private content
             if not self.ready.done():
                 self.ready.set_exception(ConnectionError("native call helper startup failed"))
             if not self._closed:
@@ -120,7 +120,7 @@ class NativeCallLink:
                     await asyncio.wait_for(self.process.wait(), 3)
                 except TimeoutError:
                     self.process.kill()
-                    await self.process.wait()
+                    await asyncio.wait_for(self.process.wait(), 5)
         if self.writer is not None:
             self.writer.close()
             with suppress(ConnectionError, OSError):

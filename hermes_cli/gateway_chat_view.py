@@ -263,7 +263,7 @@ class GatewayChatView:
 
     def _notice(self, admission, payload):
         # The owner already applied display.warning_notifications; it publishes only what shows.
-        if not self.quiet and str(payload.get("text") or "").strip():
+        if (not self.quiet or payload.get("kind") == "mcp_warning") and str(payload.get("text") or "").strip():
             print(str(payload["text"]).strip(), file=sys.stderr, flush=True)
 
     def _tool_start(self, admission, payload):

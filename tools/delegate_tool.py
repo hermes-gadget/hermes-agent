@@ -393,11 +393,13 @@ def _run_single_child(
                 task_index, goal, child, parent_agent, owner_session_id=owner_session_id,
                 owner_transport=owner_transport, owner_session_record=owner_session_record, **_kwargs,
             )
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- credential binding is a child lifecycle boundary; report a redacted error after releasing ownership
+        from agent.redact import redact_for_egress
+        logger.warning("Child credential binding failed (%s)", type(exc).__name__)
         from tools.delegate_tool_child_run import _detach_child
         _detach_child(parent_agent, child)
         child.close()
-        return _fabricated_entry(task_index, "error", str(exc), child, 0)
+        return _fabricated_entry(task_index, "error", redact_for_egress(str(exc)), child, 0)
 
 
 def _run_single_child_bound(
