@@ -21,6 +21,8 @@ import pytest
 
 @pytest.fixture
 def served_root(tmp_path, monkeypatch):
+    monkeypatch.setattr("hermes_cli.gateway.is_container", lambda: False)
+    monkeypatch.setattr("hermes_constants.is_container", lambda: False)
     root = tmp_path / "hermes"
     for name in ("coder", "other"):
         (root / "profiles" / name).mkdir(parents=True)

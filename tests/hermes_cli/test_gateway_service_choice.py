@@ -15,6 +15,8 @@ from hermes_cli import gateway_setup_service as setup_service
 
 @pytest.fixture
 def supervisor(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway, "is_container", lambda: False)
+    monkeypatch.setattr("hermes_constants.is_container", lambda: False)
     # The installer intentionally rejects /tmp profiles. A disposable RAM-backed
     # home exercises that real guard without disabling it or touching user state.
     with tempfile.TemporaryDirectory(prefix="hermes-choice-", dir="/dev/shm") as directory:

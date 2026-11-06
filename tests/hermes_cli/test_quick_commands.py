@@ -78,17 +78,16 @@ class TestGatewayQuickCommands:
     """Test quick command dispatch in GatewayRunner._handle_message."""
 
     def _make_event(self, command, args=""):
-        event = MagicMock()
-        event.get_command.return_value = command
-        event.get_command_args.return_value = args
-        event.text = f"/{command} {args}".strip()
-        event.source = MagicMock()
-        event.source.user_id = "test_user"
-        event.source.user_name = "Test User"
-        event.source.platform.value = "telegram"
-        event.source.chat_type = "dm"
-        event.source.chat_id = "123"
-        return event
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.session import SessionSource
+
+        return MessageEvent(
+            text=f"/{command} {args}".strip(),
+            message_type=MessageType.TEXT,
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="123",
+                                 user_id="test_user", user_name="Test User"),
+        )
 
     @pytest.mark.asyncio
     async def test_exec_command_returns_output(self):

@@ -310,6 +310,7 @@ class TestDoctorToolAvailabilityOverrides:
 
 
 def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
     monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
     monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", "python3.13")
     monkeypatch.setenv("TERMINAL_CONTAINER_DISK", "2048")
@@ -1103,6 +1104,7 @@ class TestGitHubTokenCheck:
         so that invocation exits 1 even for a logged-in user. A logged-in user on
         such a gh must still be reported as authenticated."""
         from hermes_cli import doctor_state
+        monkeypatch.setattr("hermes_cli.doctor_tools._safe_which", lambda name: "gh")
 
         def gh_2_98(cmd, **kwargs):
             assert cmd[:3] == ["gh", "auth", "status"], cmd

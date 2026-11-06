@@ -145,7 +145,11 @@ def isolated_python(tmp_path_factory):
     root = tmp_path_factory.mktemp("pm-python")
     uv = shutil.which("uv")
     assert uv, "the worker contract requires real uv"
-    python = stage_runtime(Path(uv), Path(sys.executable), root)
+    # Offline runners may pre-provision the real wheels from pm/uv.lock here.
+    # The builder still validates the locked hashes and uses a fresh interpreter.
+    wheelhouse = Path(__file__).resolve().parents[2] / ".hermes/test-pm-wheelhouse"
+    python = stage_runtime(Path(uv), Path(sys.executable), root,
+                           wheelhouse=wheelhouse if wheelhouse.is_dir() else None)
     _run([str(python), "-I", "-c", "import importlib.util; assert importlib.util.find_spec('yaml') is None"],
          cwd=root, env=dict(os.environ))
     return python

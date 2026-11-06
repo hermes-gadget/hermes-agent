@@ -103,19 +103,10 @@ To use a plugin, install it as a user plugin (`~/.hermes/plugins/` or `hermes pl
 ## Recovering a plugin without restarting the gateway
 
 Start with the `plugin_hook_timeout` JSON warning: it names the plugin, callback,
-hook, profile home, and timeout budget. To inspect the running gateway's health
-from a Hermes Python environment, use the gateway's launch profile home:
-
-```python
-import json
-from gateway.control_socket import query_gateway_control
-from hermes_constants import get_hermes_home
-
-status = query_gateway_control(get_hermes_home(), "status")
-if status is None:
-    raise SystemExit("No gateway answered for this home")
-print(json.dumps(status["plugin_health"], indent=2))
-```
+hook, profile home, and timeout budget. The gateway control socket's `status`
+response exposes `plugin_health` for operators inspecting the running gateway.
+Query the gateway's launch profile home; this is an administrative control
+interface, not a plugin import API.
 
 The response is keyed by profile home. `disabled_hooks` lists quarantined
 callbacks, including callbacks whose workers have already finished;

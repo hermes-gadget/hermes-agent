@@ -44,7 +44,7 @@ def test_goal_manager_is_the_gateways(cli):
     assert cli.conn.calls == [('goal', 'state')]  # loaded from the gateway, not this process's store
     state = mgr.set('ship it')
     assert state.goal == 'ship it' and mgr.is_active()
-    assert mgr.status_line() == '⊙ Goal (active, 0/20 turns): ship it'
+    assert mgr.status_line() == '⊙ Goal (active, 0/50 turns): ship it'
     assert json.loads(cli.db.get_meta('goal:sid-1'))['goal'] == 'ship it'
     with pytest.raises(IndexError, match='index out of range'):
         mgr.remove_subgoal(4)
@@ -116,5 +116,5 @@ def test_goal_draft_drafts_on_the_gateway(cli, monkeypatch):
     result = dispatch_goal_command(mgr, 'draft ship the API', authorize_gate=lambda: None, progress=lines.append)
     assert drafted == ['ship the API'] and ('goal', 'command') in cli.conn.calls
     assert lines == ['Drafting completion contract…']
-    assert result.output.startswith('⊙ Goal set (20-turn budget): ship the API') and result.kickoff
+    assert result.output.startswith('⊙ Goal set (50-turn budget): ship the API') and result.kickoff
     assert mgr.state.goal == 'ship the API'
