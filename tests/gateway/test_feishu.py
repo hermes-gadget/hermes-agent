@@ -1642,6 +1642,8 @@ class TestDedupTTL(unittest.TestCase):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
+        scratch = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch.dict(os.environ, {"HERMES_HOME": scratch}))
         adapter = FeishuAdapter(PlatformConfig())
         loop_thread = threading.get_ident()
         write_threads = []

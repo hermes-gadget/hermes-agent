@@ -40,12 +40,12 @@ def _home(tmp_path, monkeypatch, delegation, providers=None):
 
 def _turn(config, source, probe):
     class ProbeTurn(TurnRunner):
-        def _run_sync(self):
+        def _run_sync_scoped(self):
             return probe()
 
     runner = object.__new__(GatewayRunner)
     runner.config = config
-    return ProbeTurn(runner, SimpleNamespace(source=source)).run_sync()
+    return ProbeTurn(runner, SimpleNamespace(source=source, session_id=source.chat_id)).run_sync()
 
 
 def _task_description():
