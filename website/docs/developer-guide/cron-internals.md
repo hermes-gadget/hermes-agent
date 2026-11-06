@@ -8,6 +8,37 @@ description: "How Hermes stores, schedules, edits, pauses, skill-loads, and deli
 
 The cron subsystem provides scheduled task execution — from simple one-shot delays to recurring cron-expression jobs with skill injection and cross-platform delivery.
 
+## Optional delivery presentation
+
+Standalone plugins may register `prepare_cron_delivery` to present an already
+redacted result for one resolved target. The payload contains `job`, `target`,
+`content`, `config`, `media_files` and `for_failure`. Return `None` to retain the
+existing delivery, or a dictionary with `action: send | defer | suppress`.
+`send` may supply replacement `content` and a `continuation` owner user ID; the
+continuation keeps existing threads and opts flat conversations into session
+mirroring. `defer` must persist the notice before returning. Cron records it as
+queued, not delivered. A single-target durable-queue send can additionally return
+a future Unix timestamp as `not_before`; the same unattempted queue row then
+remains pending until that instant. This is never a retry of a transport attempt.
+
+`on_cron_delivery` receives the preparation result as `presentation`, plus the
+job, target, final content, `status`, `message_id` and redacted `error`. A positive
+transport receipt produces `delivered`; acceptance without evidence, in-flight
+timeouts and uncertain failures produce `unknown`. A target rejected before any
+send produces `failed`. Unknown sends must not be replayed automatically.
+Suppression is reported separately. Presentation mirrors require positive
+evidence and do not seed a conversation for an uncertain send.
+
+These hooks run synchronously and must stay fast: preparation may commit a
+durable handoff, so abandoning a timed-out callback and sending the original
+could duplicate the update. Do model composition outside these callbacks.
+Exceptions fall back to the original delivery. No registered plugin leaves
+existing delivery text and routing unchanged.
+
+`cron_prompt_context` can return job-scoped reference text. Core bounds it to
+8,000 characters and scans it as injected data. It is runtime context, never
+ambient persona or authority, and does not change cron's isolation contract.
+
 ## Key Files
 
 | File | Purpose |

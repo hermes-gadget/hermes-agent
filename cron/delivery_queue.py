@@ -134,6 +134,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         conn, "deliveries", "for_failure",
         "for_failure INTEGER NOT NULL DEFAULT 0",
     )
+    add_column_if_missing(conn, "deliveries", "not_before", "not_before REAL NOT NULL DEFAULT 0")
 
 
 def _connect() -> sqlite3.Connection:
@@ -232,8 +233,8 @@ def claim_next() -> Optional[dict]:
     with _transaction() as conn:
         # created_at carries a DST-varying offset: order by instant, not text.
         row = conn.execute(
-            "SELECT execution_id FROM deliveries WHERE status='pending' "
-            "ORDER BY julianday(created_at), created_at, execution_id LIMIT 1"
+            "SELECT execution_id FROM deliveries WHERE status='pending' AND not_before<=? "
+            "ORDER BY julianday(created_at), created_at, execution_id LIMIT 1", (time.time(),)
         ).fetchone()
         if row is None:
             return None
@@ -344,11 +345,19 @@ def drain(
                 )
             except BaseException as exc:
                 error = f"{type(exc).__name__}: {exc}"
-            if _finish(row["execution_id"], error=error,
-                       suppressed=bool(row["job"].get("_notification_all_targets_suppressed"))):
-                from cron.delivery_outcome import settle_quietly
-
-                settle_quietly(row["job"].get("id"), row["execution_id"])
+            not_before = row["job"].get("_presentation_not_before")
+            if not error and isinstance(not_before, (int, float)) and not_before > time.time():
+                # No transport was touched: keep the same id pending until policy permits
+                # delivery. An already-claimed/uncertain send never takes this branch.
+                with _transaction() as conn:
+                    conn.execute("UPDATE deliveries SET status='pending',not_before=?,owner_process_id=NULL,owner_pid=NULL,owner_started_at=NULL WHERE execution_id=? AND status='delivering' AND owner_process_id=?",
+                                 (not_before, row["execution_id"], _PROCESS_ID))
+            else:
+                if _finish(row["execution_id"], error=error,
+                           suppressed=bool(row["job"].get("_notification_all_targets_suppressed"))):
+                    from cron.delivery_outcome import settle_quietly
+    
+                    settle_quietly(row["job"].get("id"), row["execution_id"])
         finally:
             with _lock:
                 _ACTIVE_DELIVERIES.discard(row["execution_id"])

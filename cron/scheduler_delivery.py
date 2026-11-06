@@ -1133,6 +1133,8 @@ class _TargetDelivery:
     opened_thread_id: Optional[str]
     live_adapter_ready: bool = False
     live_error: Optional[str] = None  # the live lane's own rejection string, e.g. "send_path_degraded"
+    receipt_status: str = "unknown"
+    receipt_message_id: Optional[str] = None
 
     @property
     def is_relay(self) -> bool:
@@ -1355,6 +1357,9 @@ def _live_send_text(
     send_success = _confirm_adapter_delivery(send_result, job["id"], _evidence_gap)
     if send_success and _evidence_gap:
         unverified_targets.append(t.where)
+    if send_success and not _evidence_gap:
+        t.receipt_status = "delivered"
+        t.receipt_message_id = delivered_message_id
 
     if not send_success:
         if send_result is None:
@@ -1509,7 +1514,8 @@ def _deliver_via_live_adapter(
                 route_thread_id if route_thread_id is not None else "-",
                 delivered_message_id if delivered_message_id is not None else "-")
             delivered = True
-            _seed_live_delivery_sessions(t, delivered_message_id)
+            if not job.get("_presentation_requires_evidence") or t.receipt_status == "delivered":
+                _seed_live_delivery_sessions(t, delivered_message_id)
     except Exception as e:
         err_msg = f"live adapter delivery to {t.where} failed: {e}"
         if not any(err_msg in err for err in target_errors):
@@ -1644,11 +1650,15 @@ def _deliver_standalone(
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
+    if isinstance(result, dict) and (result.get("message_id") or result.get("raw_response")):
+        t.receipt_status = "delivered"
+        t.receipt_message_id = result.get("message_id")
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
         user_id=t.origin_user_id,
-        enabled=t.mirror_this_target)
+        enabled=t.mirror_this_target and (
+            not job.get("_presentation_requires_evidence") or t.receipt_status == "delivered"))
 
 
 def _prepare_target_delivery(
@@ -1789,6 +1799,8 @@ def _deliver_result(
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
     job.pop("_notification_all_targets_suppressed", None)
+    if isinstance(job.get("last_delivery_queued"), dict) and job["last_delivery_queued"].get("kind") == "presentation":
+        job["last_delivery_queued"] = None
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
@@ -1922,21 +1934,54 @@ def _deliver_result(
                 delivery_errors.append(local_error)
             continue
 
+        from cron import presentation
+        decision = presentation.prepare(
+            job, target, mirror_text, config=user_cfg, media_files=media_files, for_failure=for_failure)
+        if decision and decision["action"] in {"defer", "suppress"}:
+            if decision["action"] == "defer":
+                presentation.queued(job, target, decision)
+                if decision.get("not_before") and len(targets) == 1:
+                    job["_presentation_not_before"] = float(decision["not_before"])
+            else:
+                suppressed_targets += 1
+                presentation.receipt(job, target, decision, status="suppressed", content=mirror_text)
+            continue
+        target_job, target_content, target_mirror = job, cleaned_delivery_content, mirror_text
+        target_mirror_enabled = mirror_enabled
+        if decision:
+            target_content = _redact_cron_payload(decision.get("content", mirror_text), "presentation")
+            target_mirror = target_content
+            target_job = dict(job)
+            target_job["_presentation_requires_evidence"] = True
+            if decision.get("continuation"):
+                target_job.update(attach_to_session=True,
+                                  delivery_surface="thread" if target.get("thread_id") else "in_channel")
+                target_job["origin"] = {
+                    "platform": target["platform"], "chat_id": target["chat_id"],
+                    "thread_id": target.get("thread_id"), "chat_type": "dm",
+                    "user_id": str(decision["continuation"]),
+                }
+                target_mirror_enabled = True
         t = _prepare_target_delivery(
-            job, target, adapters=adapters, loop=loop, config=config,
+            target_job, target, adapters=adapters, loop=loop, config=config,
             notify_delivery=notify_delivery,
-            mirror_enabled=mirror_enabled, mirror_text=mirror_text, delivery_errors=delivery_errors)
+            mirror_enabled=target_mirror_enabled, mirror_text=target_mirror, delivery_errors=delivery_errors)
         if t is None:
+            presentation.receipt(job, target, decision, status="failed", content=target_content,
+                                 error="delivery target unavailable before send")
             continue
         target_errors: list = []
         delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
+            t, target_content, media_files,
             target_errors=target_errors, delivery_errors=delivery_errors,
             unverified_targets=unverified_targets,
         )
         if not delivered:
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, target_content, media_files, target_errors, delivery_errors)
+        presentation.receipt(job, target, decision, status=t.receipt_status, content=target_content,
+                             message_id=t.receipt_message_id,
+                             error="; ".join(target_errors) or None)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.
