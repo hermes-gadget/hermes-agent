@@ -1630,7 +1630,6 @@ class TestDedupTTL(unittest.TestCase):
                 assert "om_bad_str" not in adapter._seen_message_ids
                 assert "om_bad_null" not in adapter._seen_message_ids
 
-    @patch.dict(os.environ, {}, clear=True)
     def test_persist_on_new_message_runs_off_event_loop_thread(self):
         """atomic_json_write() calls os.fsync(), which blocks until the write
         reaches stable storage. _is_duplicate() runs on the event loop for
@@ -1642,8 +1641,6 @@ class TestDedupTTL(unittest.TestCase):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
-        scratch = self.enterContext(tempfile.TemporaryDirectory())
-        self.enterContext(patch.dict(os.environ, {"HERMES_HOME": scratch}))
         adapter = FeishuAdapter(PlatformConfig())
         loop_thread = threading.get_ident()
         write_threads = []
