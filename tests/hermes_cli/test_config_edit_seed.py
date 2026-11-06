@@ -44,6 +44,8 @@ def _blank_slate(tmp_path, monkeypatch, cfg):
 
 def _doctor_fix(tmp_path, monkeypatch, cfg):
     """`hermes doctor --fix` on a home with no config.yaml: the real config-file check, fix enabled."""
+    # The permission assertion below exercises host hardening, not container preservation.
+    monkeypatch.setattr("hermes_constants._detect_container", lambda: False)
     from hermes_cli import doctor
     from hermes_cli.doctor_config import _check_config_file
 
