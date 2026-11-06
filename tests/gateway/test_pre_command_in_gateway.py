@@ -536,7 +536,8 @@ def test_a_hung_pre_command_callback_is_bounded_and_each_session_keeps_its_order
         await asyncio.wait([task for task in backlog if task is not None])
     try:
         asyncio.run(run())
-        assert list(manager._hook_abandoned.values()) == [{('pre_command', id(hung), 'A')}]  # one, ever
+        assert [(r['hook'], r['running_workers'], r['quarantined']) for r in
+                manager.hook_health.snapshot()['stuck_hooks']] == [('pre_command', 1, True)]
     finally:
         release.set()
 

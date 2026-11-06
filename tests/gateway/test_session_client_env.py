@@ -317,6 +317,7 @@ async def test_configured_toolchain_names_a_local_client_omitted_never_leak_from
     from tools.process_registry import ProcessRegistry
     home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
     monkeypatch.setenv('GEM_HOME', '/alpha')
+    monkeypatch.setattr('tools.environments.local._resolve_hermes_bin_dir', lambda: None)
     monkeypatch.setenv('PATH', '/daemon/bin:/usr/bin:/bin')
     owner, connection = await _owner(home, monkeypatch)
 
@@ -361,6 +362,7 @@ async def test_host_values_apply_only_over_a_gateway_proven_local_attach(tmp_pat
     for name in ('gateway', 'client'):
         (home / f'{name}.json').write_text(json.dumps([{'role': 'user', 'content': name}]))
     monkeypatch.setenv('HERMES_PREFILL_MESSAGES_FILE', str(home / 'gateway.json'))
+    monkeypatch.setattr('tools.environments.local._resolve_hermes_bin_dir', lambda: None)
     monkeypatch.setenv('PATH', '/daemon/bin:/usr/bin:/bin')
     monkeypatch.delenv('NVM_DIR', raising=False)
     owner, remote = await _owner(home, monkeypatch)  # an attach without the gateway's own ticket

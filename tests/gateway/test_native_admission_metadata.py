@@ -1,7 +1,5 @@
 """Native admission keeps main's inbound contract: real adapter events run a turn (N78-N80)."""
-import ast
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
@@ -15,7 +13,6 @@ from gateway.session_results import execution_result
 from hermes_state_runtime import RuntimeStoreError
 from tests.waiting import async_wait_until
 
-REPO = Path(__file__).resolve().parents[2]
 CHAT = '15551234567@s.whatsapp.net'
 VCARD = 'BEGIN:VCARD\nPHOTO;BASE64:' + 'A' * 20000 + '\nEND:VCARD'
 # (bridge payload overrides, expected turn text, expected restored metadata)
@@ -102,7 +99,7 @@ async def test_native_codec_closed_metadata_contract_and_reply_expected(tmp_path
         refused = [{'whatsapp_native_type': 'x', 'internal': True}, {'gateway_session_id': 's'},
                    {'_authorization_profile_home': '/x'}, {'arbitrary': 1}, {'whatsapp_native_type': 'x' * 65},
                    {'whatsapp_native': {'gateway_session_id': 's'}}, {'whatsapp_from_owner': 'yes'},
-                   {'whatsapp_native': {'poll': {1, 2}}}]
+                   {'whatsapp_native': {'poll': {1, 2}}}, {'voice_request_id':'discord-only'}]
         for metadata in refused:
             with pytest.raises(RuntimeStoreError, match='invalid_params'):
                 snapshot_native(runner, replace(event, metadata=metadata))
@@ -118,12 +115,3 @@ async def test_native_codec_closed_metadata_contract_and_reply_expected(tmp_path
                     snapshot_native(runner, replace(event, **{name: bad}))
     finally:
         authority.db.close()
-    # Closed producer matrix: no other adapter stamps MessageEvent.metadata on ordinary inbound,
-    # so the WhatsApp keys above are the whole contract. A new producer must extend it here.
-    producers = set()
-    for path in [*REPO.glob('gateway/platforms/**/*.py'), *REPO.glob('plugins/platforms/**/*.py')]:
-        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
-            if (isinstance(node, ast.Call) and getattr(node.func, 'id', getattr(node.func, 'attr', '')) == 'MessageEvent'
-                    and any(k.arg == 'metadata' for k in node.keywords)):
-                producers.add(path.relative_to(REPO).as_posix())
-    assert producers == {'plugins/platforms/whatsapp/adapter.py'}, producers

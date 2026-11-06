@@ -43,6 +43,12 @@ def _native_metadata(event):
     metadata = event.metadata
     if not metadata:
         return {}
+    if isinstance(metadata, dict) and set(metadata) == {'voice_request_id'}:
+        request_id = metadata['voice_request_id']
+        if (event.source.platform.value == 'discord' and isinstance(request_id, str)
+                and 0 < len(request_id) <= 256):
+            return {'voice_request_id': request_id}
+        return None
     if (not isinstance(metadata, dict) or event.source.platform.value != 'whatsapp'
             or not set(metadata) <= _WHATSAPP_METADATA):
         return None

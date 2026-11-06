@@ -4,11 +4,14 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 from gateway.readiness import collect_runtime_readiness
 
 
 def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monkeypatch):
+    monkeypatch.setattr('gateway.readiness.shutil.disk_usage',
+                        lambda _: SimpleNamespace(total=100, used=10, free=90))
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text(

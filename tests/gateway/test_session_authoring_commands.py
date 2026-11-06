@@ -167,7 +167,8 @@ class _JudgeModel(Model):
 
 
 @pytest.mark.platforms("linux")
-def test_local_goal_kickoff_is_judged_and_continued_by_the_gateway(tmp_path):
+@pytest.mark.parametrize('goal_settings,expected_limit', [({}, 50), ({'max_turns': 20}, 20)])
+def test_local_goal_kickoff_is_judged_and_continued_by_the_gateway(tmp_path, goal_settings, expected_limit):
     """The client submits /goal's kickoff; the gateway's post-turn judge then admits the continuation
     into the session's own FIFO (the local adapter has no FIFO reader) until the judge says done."""
     root = Path(__file__).resolve().parents[2]
@@ -182,7 +183,7 @@ def test_local_goal_kickoff_is_judged_and_continued_by_the_gateway(tmp_path):
     url = f'http://127.0.0.1:{peer.server_port}/v1'
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False}, 'model': {'provider': 'custom', 'default': 'm', 'base_url': url},
-        'auxiliary': {'title_generation': {'enabled': False}}}))
+        'auxiliary': {'title_generation': {'enabled': False}}, 'goals': goal_settings}))
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1')
@@ -212,7 +213,7 @@ def test_local_goal_kickoff_is_judged_and_continued_by_the_gateway(tmp_path):
         peer.shutdown()
         peer.server_close()
         thread.join(timeout=5)
-    assert out['status'].startswith('✓ Goal done (2/20 turns)'), out['status']
+    assert out['status'].startswith(f'✓ Goal done (2/{expected_limit} turns)'), out['status']
     users = [m['content'] for m in out['messages'] if m.get('role') == 'user']
     assert users[0] == 'write the probe' and 'standing goal' in users[1], users
     with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:

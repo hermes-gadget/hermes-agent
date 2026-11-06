@@ -31,6 +31,8 @@ def _turns(authority):
 def mark_producer_admission(authority, event, row):
     """``SessionAuthority._admitted``, in the commit's own tracked task: a producer's freshly queued
     row is the executor's to bracket. A re-send of a row already running or settled is not marked."""
+    from plugins.platforms.live_voice.admission import remember_turn
+    remember_turn(authority, event, row)
     if getattr(event, '_producer_delivery', False) and row['status'] == 'queued':
         _turns(authority).setdefault(row['admission_id'], None)
 
@@ -130,6 +132,8 @@ async def close_producer_turn(authority, admission_id, outcome):
 def drop_producer_turn(authority, admission_id):
     """The admission settled without its reply (unknown, discarded) or was cancelled before it ran:
     a started turn reports FAILURE, off the caller's path."""
+    from plugins.platforms.live_voice.admission import forget_turn
+    forget_turn(authority, admission_id)
     bracket = _turns(authority).pop(admission_id, None)
     if bracket is None or bracket.closed:
         return

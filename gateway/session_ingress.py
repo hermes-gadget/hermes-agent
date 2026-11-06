@@ -410,9 +410,11 @@ def _launch_body_if_launch_owner(authority):
 async def _admission_scope(authority, home, row, event, captured):
     """The execution scope, inside the adapter lifecycle the executor owns for a producer-admitted
     turn (``session_producer_lifecycle``; a no-op for every other admission)."""
-    async with producer_turn(authority, row, event, captured):
-        with await _execution_scope(authority, home):
-            yield
+    from plugins.platforms.live_voice.admission import voice_turn
+    with voice_turn(authority, row, event):
+        async with producer_turn(authority, row, event, captured):
+            with await _execution_scope(authority, home):
+                yield
 
 
 async def _execution_scope(authority, home):
