@@ -78,6 +78,30 @@ def _private_repo_checkout_lock(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _private_repo_source_gate(monkeypatch, tmp_path):
+    """Updater tests must never close admission on the checkout running the suite.
+
+    Fixture checkouts keep their real on-disk gate. Only the suite checkout's
+    shared gate is relocated, like its checkout lock above.
+    """
+    from pathlib import Path
+    from hermes_cli import source_health
+
+    repo = Path(source_health.__file__).resolve().parents[1]
+    private = tmp_path / "source-gate-checkout"
+    private.mkdir()
+    read, directory = source_health._read_state, source_health._state_directory
+
+    def target(root):
+        return private if Path(root).resolve() == repo else root
+
+    monkeypatch.setattr(source_health, "_PROJECT_ROOT", private)
+    monkeypatch.setattr(source_health, "_BOOT_STATE", {"status": "ready", "generation": None})
+    monkeypatch.setattr(source_health, "_read_state", lambda root: read(target(root)))
+    monkeypatch.setattr(source_health, "_state_directory", lambda root: directory(target(root)))
+
+
+@pytest.fixture(autouse=True)
 def _source_channels_resolve_locally(request, monkeypatch):
     """Every unflagged ``hermes update`` resolves its channel through R2; tests must
     not reach the network for that. Default every channel to a ``source-branch``

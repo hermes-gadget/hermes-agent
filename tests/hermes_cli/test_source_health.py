@@ -160,6 +160,8 @@ import sys
 from pathlib import Path
 from hermes_cli.source_health import source_session, SourceHealthError
 root = Path(sys.argv[1])
+from hermes_cli import source_health
+source_health._BOOT_STATE = source_health._read_state(root)
 with source_session(root):
     print('reader admitted', flush=True)
     input()

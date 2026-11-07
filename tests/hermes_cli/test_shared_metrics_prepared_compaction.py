@@ -207,7 +207,10 @@ def test_waste_modes_say_why(monkeypatch, marks):
     _run_pass(failed, msgs, "tool-batch")
 
     rows = _events(marks)
-    assert ("discarded", "none", "wait_timeout", "none", "lt_1s") in rows
+    # A loaded CI host can resume after a different wall-time bucket. The
+    # contract here is one timed-out discard with an actual measured wait.
+    timed_out = [row for row in rows if row[:4] == ("discarded", "none", "wait_timeout", "none")]
+    assert len(timed_out) == 1 and timed_out[0][4] != "none"
     assert ("pass_cancelled", "tool_batch", "wait_timeout", "none", "none") in rows
     assert ("compaction_failed", "none", "none", "session_split_failed", "none") in rows
     assert ("pass_failed", "tool_batch", "none", "summary_auth_failure", "none") in rows

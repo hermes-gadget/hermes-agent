@@ -145,9 +145,11 @@ def test_tool_output_truncation_is_judged_after_the_turn_budget(direct_runtime, 
 
 
 def test_tool_overhead_and_unused_toolsets_report_once_per_conversation(direct_runtime, tmp_path, monkeypatch):
-    toolsets = {"read_file": "file", "terminal": "terminal", "acme_private_tool": "acme-private"}
+    toolsets = {"read_file": "file", "terminal": "terminal", "voice_assistant": "live_voice"}
     monkeypatch.setattr("model_tools.get_toolset_for_tool", toolsets.get)
-    agent = _agent()
+    agent = _agent(tools=[{"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+                          for name in toolsets])
+    assert contract.tool_metric_name({"tool_name": "voice_assistant", "toolset": "live_voice"}) == "plugin"
     _turn("s1", "t1", None, calls=[_usage(100)])
     eff.observe_request_tools(agent, agent.tools)
     eff.observe_request_tools(agent, agent.tools)  # same array: latched, no recount
@@ -160,7 +162,7 @@ def test_tool_overhead_and_unused_toolsets_report_once_per_conversation(direct_r
     assert _rows(tmp_path, "hermes.tool_enabled_unused.count") == sorted([
         (_dims(toolset="custom", used="no"), 1), (_dims(toolset="file", used="no"), 1),
         (_dims(toolset="terminal", used="yes"), 1)])
-    assert "acme" not in json.dumps(_stored_values(tmp_path, "hermes.tool_enabled_unused.count"))
+    assert "live_voice" not in json.dumps(_stored_values(tmp_path, "hermes.tool_enabled_unused.count"))
 
 
 def test_several_known_causes_before_one_cold_read_are_one_break(direct_runtime, tmp_path):
