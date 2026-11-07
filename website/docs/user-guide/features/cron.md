@@ -703,6 +703,17 @@ error. A delivery failure does not count toward the job's `failure_streak`
 
 `bot-chat` delivers the output **into a profile's canonical "Bot Chat" session as a real message**. Unlike every other target — where the recipient is a human reading a channel — the recipient here is the bot itself: it receives the output as an incoming message, acts on anything that needs action, and responds in its chat. Use it when scheduled output should be *processed*, not just posted.
 
+**A bot-chat delivery is a control turn, not a chat message.** The payload is the bot's input: it
+is persisted with the `control_turn` display kind (machinery, and never painted by the TUI or the
+Desktop), so a routine "all clear" report leaves **nothing** in the transcript. The bot owns what
+you read — it acts, then states what it did and anything worth knowing in its own words (a morning
+brief still reaches you that way), and answers `[SILENT]` when it took no action and there is
+nothing to say. That verdict is the healthy one, exactly like a synthetic wake; anything the bot
+does write is a normal assistant message and *is* shown. That is why a watch can fire every five
+minutes without bubble-plus-ack noise. Keep prompts and scripts silent when healthy anyway
+(`[SILENT]`, or empty stdout for a `no_agent` script): sender-side silence skips the target turn
+entirely, receiver-side quiet only stops it from being displayed.
+
 - `bot-chat` (bare) targets the job's own profile.
 - `bot-chat:<profile>` targets another profile **on the same machine**. Names are validated against `hermes profile list` when the job is created; profiles on other gateways or machines can never be targeted, so same-named profiles across machines are unambiguous.
 - Each delivery costs the target bot one full agent turn — mind the schedule frequency.

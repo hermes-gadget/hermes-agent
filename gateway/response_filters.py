@@ -31,10 +31,17 @@ _BRACKETED_SILENCE_MARKERS = tuple(
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn; only these
 # machinery kinds may vanish on a bare silence marker.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
+# A scheduled job's report admitted into a profile's Bot Chat (``cron.bot_chat_message``): the bot
+# reads it as an incoming turn, the person never sees the payload. Machinery (a bare silence marker
+# is the healthy verdict) AND unpainted (renderers skip it like ``hidden``) — neither existing kind
+# is both: ``hidden`` is client-authorable and not machinery, ``internal_notification`` is drawn.
+CONTROL_TURN_DISPLAY_KIND = "control_turn"
 # Async-result cards the in-process TUI persisted: a producer's internal event naming one (with a
 # display_text) persists as that row kind instead of internal_notification.
 PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
-MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+MACHINERY_DISPLAY_KINDS = frozenset({
+    INTERNAL_NOTIFICATION_DISPLAY_KIND, CONTROL_TURN_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS,
+})
 # What a gateway producer's card may name (a liveness tick names internal_notification for its CLI
 # receipt). Closed, and kept apart from the silence set above so a kind added there never becomes
 # nameable; never a client-chosen presentation such as ``hidden``.
@@ -182,6 +189,10 @@ def display_kind_for_event(event: Any) -> str | None:
     if kind := admission_display(event).get("kind"):
         # A canonical admission committed hidden (Desktop widget intent): never a user bubble.
         return kind
+    if getattr(event, "internal", False) and (getattr(event, "metadata", None) or {}).get("cron_report"):
+        # A scheduled job's report: the bot's turn, not the person's — and its payload is never a
+        # bubble. Only the delivering lane can set this flag, never inbound text.
+        return CONTROL_TURN_DISPLAY_KIND
     if getattr(event, "internal", False) and _producer_card(event):
         return event.metadata["display_kind"]
     if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):

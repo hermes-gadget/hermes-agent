@@ -274,15 +274,19 @@ def _write(path: Path, record: dict[str, Any]) -> None:
 def deliver_to_live_owner(
     profile_home: Path | str, owner: dict[str, Any], message: str,
     *, delivery_id: str | None = None, author: dict[str, Any] | None = None,
-    notification_category: str = "result",
+    notification_category: str = "result", cron_report: bool = False,
 ) -> dict[str, Any]:
     """Return durable admission immediately, without waiting for the owner.
 
     Retry with the same id AND pinned owner/message to inspect the existing
     state. Reusing an id with a different payload is an error, never an overwrite.
+
+    ``cron_report`` marks a scheduled job's output: the target persists the turn as a control
+    turn (``gateway.response_filters.CONTROL_TURN_DISPLAY_KIND``) — its payload is model input,
+    never a user-visible row, and a bare silence marker is the healthy answer.
     """
     return _door(authority_delivery, profile_home, owner, message, delivery_id=delivery_id, author=author,
-                 notification_category=notification_category)
+                 notification_category=notification_category, cron_report=cron_report)
 
 
 def settle_held_delivery(profile_home: Path | str, owner: dict[str, Any], message: str, *, delivery_id: str,
@@ -293,12 +297,14 @@ def settle_held_delivery(profile_home: Path | str, owner: dict[str, Any], messag
 
 
 def _door(call: Callable[[Path, dict], dict], profile_home, owner, message, *, delivery_id=None, author=None,
-          notification_category="result"):
+          notification_category="result", cron_report=False):
     pinned = _owner(profile_home, owner)
     if not isinstance(message, str):
         raise ValueError("message must be a string")
     if notification_category not in ('result', 'diagnostic'):
         raise ValueError("invalid notification category")
+    if type(cron_report) is not bool:
+        raise ValueError("cron_report must be a boolean")
     home = Path(profile_home).resolve()
     category = {"notification_category": "diagnostic"} if notification_category == "diagnostic" else {}
     # The authority refuses a category-changing replay (admission_conflict), so the admitted
@@ -306,7 +312,8 @@ def _door(call: Callable[[Path, dict], dict], profile_home, owner, message, *, d
     return {**call(home, dict(id=_delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex),
         profile=home.name if home.parent.name == "profiles" else "default",
         message=message, **({"session_id": pinned["session_id"]} if pinned["session_id"] else {}),
-        **({"author": dict(author)} if author else {}), **category)), **category}
+        **({"author": dict(author)} if author else {}), **category,
+        **({"cron_report": True} if cron_report else {}))), **category}
 
 
 def owner_holds_delivery(profile_home: Path | str, record: dict) -> bool:

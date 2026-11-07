@@ -280,6 +280,19 @@ _HISTORY_ASSISTANT_DETAIL_KEYS = (
     "codex_message_items",
 )
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
+# Rows a renderer must never paint: model-facing scaffolding (``hidden``) and a scheduled job's
+# report to a bot (``control_turn``, ``gateway.response_filters.CONTROL_TURN_DISPLAY_KIND``).
+_UNPAINTED_DISPLAY_KINDS = frozenset({"hidden", "control_turn"})
+
+
+def _is_silence_marker_text(text) -> bool:
+    """True when a reply is exactly a silence control token (``[SILENT]`` / ``NO_REPLY`` / ...).
+
+    Shared with the delivery filters so the projection can never treat a marker as content while
+    the live lane suppresses it (a resumed transcript would otherwise paint ``[SILENT]``).
+    """
+    from gateway.response_filters import is_intentional_silence_response
+    return is_intentional_silence_response(text)
 
 
 def _remember_tool_call_args(tool_calls: list, tool_call_args: dict) -> None:
@@ -315,12 +328,17 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             _remember_tool_call_args(m["tool_calls"], tool_call_args)
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch (a held
         # turn's commentary too: its tool rows still render, labelled from the calls read above).
-        if m.get("display_kind") == "hidden":
+        # "control_turn": a scheduled job's report to a bot — the bot's input, never a transcript row.
+        if m.get("display_kind") in _UNPAINTED_DISPLAY_KINDS:
             continue
         content_text = _user_image_display_text(m.get("content")) if role == "user" else None
         if content_text is None:
             content_text = _coerce_message_text(m.get("content"), image_urls=image_urls)
         if _is_display_hidden_marker(role, content_text):
+            continue
+        if role == "assistant" and _is_silence_marker_text(content_text):
+            # The turn ended in a bare silence marker (a control turn that needed nothing, a wake with
+            # no change): the marker is a delivery verdict, never something the person reads.
             continue
         if role == "user":
             content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)

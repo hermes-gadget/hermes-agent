@@ -40,6 +40,22 @@ describe('toTranscriptMessages', () => {
     expect(result.every(m => !m.text?.includes('COMPACTION'))).toBe(true)
   })
 
+  it('skips a scheduled job report admitted as a control turn', () => {
+    const rows = [
+      { role: 'user', text: 'visible prompt' },
+      {
+        role: 'user',
+        text: '[Scheduled task "ukmesh-packet-flow-watch" — automatic report, not a message from the user.]',
+        display_kind: 'control_turn'
+      },
+      { role: 'assistant', text: 'stall cleared, nothing to action' }
+    ]
+
+    const result = toTranscriptMessages(rows)
+    expect(result.map(msg => msg.text)).toEqual(['visible prompt', 'stall cleared, nothing to action'])
+    expect(result.every(m => !m.text?.includes('Scheduled task'))).toBe(true)
+  })
+
   it('projects model_switch as an event with replaced text', () => {
     const rows = [
       { role: 'user', text: 'hello' },

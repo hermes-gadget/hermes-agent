@@ -60,7 +60,7 @@ def _deliver_bot_chat(job: dict, content: str) -> str:
 
     captured = {}
 
-    def _fake_deliver(home, owner, message, *, delivery_id, notification_category="result"):
+    def _fake_deliver(home, owner, message, *, delivery_id, notification_category="result", cron_report=False):
         captured["message"] = message
         return {"status": "settled", "message": message, "delivery_id": delivery_id}
 
@@ -81,7 +81,7 @@ def test_every_outward_lane_masks_secret_in_payload_and_job_name(lane):
     content = f"{BODY} Token was {FAKE_SECRET} (oops)."
     if lane == "bot_chat":
         out = _deliver_bot_chat(job, content)
-        assert "[Cronjob " in out
+        assert "[Scheduled task " in out
     else:
         sent, mirrored = _deliver_platform_and_mirror(job, content)
         out = sent if lane == "platform_send" else mirrored

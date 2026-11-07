@@ -73,6 +73,9 @@ class CanonicalBotDeliverParams(Params):
     session_id: str | None = None
     author: dict[str, JsonValue] | None = None
     notification_category: str | None = None
+    # A scheduled job's report (cron bot-chat): the target persists the turn as a control turn —
+    # its payload is model input, never a user-visible row, and a bare silence marker is healthy.
+    cron_report: bool | None = None
 
 
 class CanonicalBotDeliverResult(Result):

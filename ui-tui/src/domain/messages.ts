@@ -23,6 +23,11 @@ export const userDisplay = (text: string) => {
 const storedRowId = (role: string, rowId: unknown): Pick<Msg, 'rowId'> =>
   role === 'user' && Number.isSafeInteger(rowId) && (rowId as number) > 0 ? { rowId: rowId as number } : {}
 
+// Rows no renderer may paint: hidden compaction handoffs (model scaffolding) and `control_turn`,
+// a scheduled job's report delivered into a bot's chat — its payload is the bot's input, never a
+// row the person reads.
+const UNRENDERED_DISPLAY_KINDS = new Set<string | undefined>(['hidden', 'control_turn'])
+
 export const toTranscriptMessages = (rows: unknown): Msg[] => {
   if (!Array.isArray(rows)) {
     return []
@@ -51,9 +56,8 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    // Display-only timeline events: render as dim ◈ markers instead of
-    // opaque user messages. Hidden compaction handoffs are skipped entirely.
-    if (display_kind === 'hidden') {
+    // Display-only timeline events: render as dim ◈ markers instead of opaque user messages.
+    if (UNRENDERED_DISPLAY_KINDS.has(display_kind)) {
       continue
     }
 

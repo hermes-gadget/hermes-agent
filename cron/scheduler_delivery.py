@@ -700,6 +700,13 @@ def _get_standalone_send_timeout() -> int:
 def bot_chat_message(job: dict, content: str) -> str:
     """The inbound Bot Chat turn text for one cron output.
 
+    A bot-chat target's recipient is the bot, not a person, so this turn is a CONTROL turn: the
+    payload is its input and is never shown (``cron_report`` makes the target persist the row as
+    ``gateway.response_filters.CONTROL_TURN_DISPLAY_KIND``). The recipient therefore owns what the
+    person reads: it acts, then says what it did and anything worth knowing — a briefing still
+    reaches the user through those words, while a routine all-clear (the bubble-plus-ack noise this
+    contract exists to remove) is answered with the silence marker.
+
     Outward lane: this text becomes an inbound turn in another profile's Bot Chat through the
     live owner's durable admission record, so it gets the same fail-closed scrub as the chat
     message and the session mirror; the admitted record carries the scrubbed copy, never the raw
@@ -708,9 +715,12 @@ def bot_chat_message(job: dict, content: str) -> str:
     content = _redact_cron_payload(content, "bot-chat payload")
     job_name = _redact_cron_payload(job.get("name", job.get("id", "?")), "job name")
     return (
-        f'[Cronjob "{job_name}" output — '
-        f"scheduled job, not the user. Review it, act on anything that needs action, and "
-        f"summarize for the chat.]\n\n{content}"
+        f'[Scheduled task "{job_name}" — automatic report, not a message from the user. '
+        f"Deal with anything that genuinely needs action. Then reply once, in your own words: "
+        f"say what you did and anything here the user should know (never repeat this report "
+        f"verbatim, never summarise a routine all-clear). If you took no action and there is "
+        f"nothing worth telling the user, reply with exactly [SILENT] and nothing else. Only "
+        f"your reply is ever shown; this report text is not.]\n\n{content}"
     )
 
 
@@ -775,9 +785,20 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
                 return f"{target} queued (receipt {key}): target profile not running; admitted once it is"
             if owner is None:
                 return f"bot-chat delivery to profile '{profile_label}' unverified: no canonical Bot Chat"
-            # A failure notice rides as ``diagnostic`` so the target's reply stays muted.
-            receipt = deliver_to_live_owner(home, owner, message, delivery_id=key,
-                **({"notification_category": "diagnostic"} if for_failure else {}))
+            # A failure notice rides as ``diagnostic`` so the target's reply stays muted; every
+            # bot-chat delivery rides as ``cron_report`` so the payload itself never paints.
+            category = {"notification_category": "diagnostic"} if for_failure else {}
+            try:
+                receipt = deliver_to_live_owner(home, owner, message, delivery_id=key, cron_report=True,
+                                                **category)
+            except Exception as exc:
+                # Runtime skew: a target gateway started before ``cron_report`` existed refuses the
+                # unknown parameter. Nothing was admitted, so the same id retries without it and the
+                # report lands as it did before (painted) instead of failing to deliver at all.
+                if "invalid_params" not in str(exc):
+                    raise
+                logger.info("Job '%s': target runtime has no control-turn support; delivering plainly", job_id)
+                receipt = deliver_to_live_owner(home, owner, message, delivery_id=key, **category)
         if (receipt["message"] != message
                 or receipt.get("notification_category", "result") != ("diagnostic" if for_failure else "result")):
             raise ValueError("delivery id already belongs to a different payload")

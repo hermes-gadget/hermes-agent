@@ -8001,6 +8001,18 @@
             ],
             "default": null,
             "title": "Notification Category"
+          },
+          "cron_report": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cron Report"
           }
         },
         "required": [

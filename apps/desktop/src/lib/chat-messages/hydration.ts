@@ -164,7 +164,9 @@ function transcriptContent(
   role: SessionMessage['role'],
   content: string
 ): string | null {
-  if (displayKind === 'hidden') {
+  // `control_turn`: a scheduled job's report to a bot (cron bot-chat delivery). Its payload is the
+  // bot's input, never a row the person reads — same treatment as model scaffolding.
+  if (displayKind === 'hidden' || displayKind === 'control_turn') {
     return null
   }
 

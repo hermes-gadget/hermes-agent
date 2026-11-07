@@ -722,7 +722,8 @@ async def _migrate(authority, actor, home, root):
             continue
         await _admit(authority, actor, home, root, _delivery_id(record['delivery_id']),
                      record['message'], ref, live, entry, author=parse_turn_author(record.get('author')), legacy=record,
-                     notification_category=record.get('notification_category', 'result'))
+                     notification_category=record.get('notification_category', 'result'),
+                     cron_report=bool(record.get('cron_report')))
 
 
 async def recover_bot_deliveries(authority):
@@ -792,25 +793,31 @@ async def deliver(connection, params):
     return {**answer, 'target_state': bot_chat_state(connection.authority, answer['session_id'])}
 
 
-def _require_same_delivery(record, actor, message, author, category):
+def _require_same_delivery(record, actor, message, author, category, cron_report=False):
     """A delivery id names one delivery: the same message, principal, author and category (the
     mailbox writer's identity), whether its receipt is admission-backed or refused."""
     from gateway.owner_identity import same_owner
     if (record['message'] != message or not same_owner(record['principal_id'], actor.subject)
             or record.get('author') != author
-            or record.get('notification_category', 'result') != category):
+            or record.get('notification_category', 'result') != category
+            # Absent on a receipt written before the flag existed: not a conflict, just old.
+            or ('cron_report' in record and bool(record['cron_report']) != cron_report)):
         raise RuntimeStoreError('admission_conflict')
 
 
 def _delivery_params(authority, actor, params):
-    """``(home, key, message, author, category)`` of one ``deliver``/``settle`` request: the
-    delivery's full identity, validated the same way for both verbs."""
+    """``(home, key, message, author, category, cron_report)`` of one ``deliver``/``settle`` request:
+    the delivery's full identity, validated the same way for both verbs."""
     home = _home(authority, actor, params.get('profile'))
-    if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category'}:
+    if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category',
+                      'cron_report'}:
         raise RuntimeStoreError('invalid_params')
     from gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata(params)
     category = notification.get('notification_category', 'result')
+    cron_report = params.get('cron_report')
+    if cron_report is not None and type(cron_report) is not bool:
+        raise RuntimeStoreError('invalid_params')
     try:
         key = _delivery_id(params.get('id'))
     except ValueError as exc:
@@ -825,7 +832,7 @@ def _delivery_params(authority, actor, params):
     author = parse_turn_author(params.get('author'))
     if params.get('author') is not None and (not isinstance(params['author'], dict) or author is None):
         raise RuntimeStoreError('invalid_params')
-    return home, key, message, author, category
+    return home, key, message, author, category, bool(cron_report)
 
 
 def _refused_answer(record):
@@ -850,8 +857,8 @@ async def _receipt_answer(authority, actor, home, record, identity, retry_path=N
 
 async def _deliver(connection, params):
     authority, actor = connection.authority, connection.actor
-    home, key, message, author, category = _delivery_params(authority, actor, params)
-    identity = (message, author, category)
+    home, key, message, author, category, cron_report = _delivery_params(authority, actor, params)
+    identity = (message, author, category, cron_report)
     authority._require_admission_open()
     async with mailbox_lock(authority):
         root, record = await read_receipt(home, key)
@@ -873,7 +880,7 @@ async def _deliver(connection, params):
             if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):
                 raise RuntimeStoreError('admission_conflict')
             return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
-                                notification_category=category)
+                                notification_category=category, cron_report=cron_report)
         except RuntimeStoreError as exc:
             raise await _held_by_another_writer(home, key, exc) or exc
 
@@ -904,21 +911,21 @@ async def _settle(connection, params):
     ``session:submit`` principal of the profile can settle an id it never delivered: the trust
     ``deliver`` already grants it over that id."""
     authority, actor = connection.authority, connection.actor
-    home, key, message, author, category = _delivery_params(authority, actor, params)
+    home, key, message, author, category, cron_report = _delivery_params(authority, actor, params)
     async with mailbox_lock(authority):
         _, record = await read_receipt(home, key)
         if record is None:
-            record = _not_sent_record(authority, actor, home, key, message, author, category)
+            record = _not_sent_record(authority, actor, home, key, message, author, category, cron_report)
             await write_receipt(home, record)
             logging.getLogger(__name__).info('Bot Chat delivery %s settled as not sent (%s)', key, record['reason'])
-        _require_same_delivery(record, actor, message, author, category)
-        answer = await _receipt_answer(authority, actor, home, record, (message, author, category))
+        _require_same_delivery(record, actor, message, author, category, cron_report)
+        answer = await _receipt_answer(authority, actor, home, record, (message, author, category, cron_report))
         if answer is None:
             raise RuntimeStoreError('unknown_execution')
         return answer
 
 
-def _not_sent_record(authority, actor, home, key, message, author, category):
+def _not_sent_record(authority, actor, home, key, message, author, category, cron_report=False):
     """The never-admitted id's terminal receipt, in ``refuse_pin``'s shape. Refuses (unknown) when
     the FIFO holds a ``bot:<id>`` row anyway or there is no Bot Chat to name."""
     with authority.db._read_ctx() as conn:
@@ -927,10 +934,12 @@ def _not_sent_record(authority, actor, home, key, message, author, category):
     if admitted is not None or row is None:
         raise RuntimeStoreError('unknown_execution')
     from gateway.session_automation import automation_notification_metadata
-    record = dict(delivery_id=key, profile_home=str(home), session_id=authority.db.get_compression_tip(row['id']),
+    record: dict = dict(delivery_id=key, profile_home=str(home), session_id=authority.db.get_compression_tip(row['id']),
                   principal_id=actor.subject, message=message, status='failed', refused=True, reply='',
                   error='Settled as not sent after a session-writer refusal', reason=HELD_NOT_SENT)
     record.update(automation_notification_metadata({'notification_category': category}))
+    if cron_report:
+        record['cron_report'] = True
     if author is not None:
         record['author'] = dict(author)
     return record
@@ -953,7 +962,7 @@ async def _held_by_another_writer(home, key, exc):
 
 
 async def _admit(authority, actor, home, root, key, message, ref, live, entry, author=None, legacy=None,
-                 notification_category='result'):
+                 notification_category='result', cron_report=False):
     from gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata({'notification_category': notification_category})
     path = root / f'{key}.json'
@@ -961,13 +970,19 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
         message_id='bot:' + key, metadata={'gateway_session_key': live.route,
                                          'gateway_session_id': entry.session_id})
     event.metadata.update(notification)
+    if cron_report:
+        # The target persists this turn as a control turn: the payload is the bot's input, never a
+        # row the person reads, and a bare silence marker is its healthy verdict.
+        event.metadata['cron_report'] = True
     if author is not None:
         event.metadata['turn_author'] = dict(author)
     # Pin the physical target before committing. A process death in this
     # two-store window leaves an explicit unknown record, never a new target.
-    record = dict(legacy or {}, delivery_id=key, profile_home=str(home), session_id=ref.session_id,
+    record: dict = dict(legacy or {}, delivery_id=key, profile_home=str(home), session_id=ref.session_id,
         principal_id=actor.subject, message=message, status='ambiguous')
     record.update(notification)
+    if cron_report:
+        record['cron_report'] = True
     if 'session:operator' in actor.capabilities:
         record['operator'] = True  # admitted on operator access: its one retry keeps it (``_maybe_retry``)
     if author is not None:

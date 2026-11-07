@@ -109,16 +109,58 @@ def test_deliver_message_carries_cron_attribution(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     captured = {}
 
-    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result"):
+    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result", cron_report=False):
         captured["message"] = message
         return {"status": "settled", "message": message, "delivery_id": delivery_id}
 
     monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "local-bot"})
     monkeypatch.setattr(mailbox, "deliver_to_live_owner", fake_deliver)
     assert _deliver_to_bot_chat({"id": "j1", "name": "Daily digest", "execution_id": "r1"}, "the payload", "") is None
-    assert 'Cronjob "Daily digest" output' in captured["message"]
-    assert "not the user" in captured["message"]
+    assert 'Scheduled task "Daily digest"' in captured["message"]
+    assert "not a message from the user" in captured["message"]
     assert "the payload" in captured["message"]
+
+
+def test_deliver_marks_the_turn_as_a_control_turn(tmp_path, monkeypatch):
+    """A bot-chat delivery is a control turn: the payload is model input, never a painted row, and
+    the recipient is told plainly that silence is the healthy answer (an "all clear" summary is
+    exactly the noise this contract removes)."""
+    from tools import bot_live_delivery as mailbox
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    seen = []
+
+    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result", cron_report=False):
+        seen.append((message, cron_report))
+        return {"status": "settled", "message": message, "delivery_id": delivery_id}
+
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "local-bot"})
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", fake_deliver)
+    assert _deliver_to_bot_chat({"id": "j1", "name": "n", "execution_id": "r1"}, "ok", "") is None
+    message, cron_report = seen[0]
+    assert cron_report is True
+    assert "[SILENT]" in message and "nothing else" in message
+    assert "summarize" not in message
+
+
+def test_a_target_runtime_without_control_turns_still_gets_the_report(tmp_path, monkeypatch):
+    """Runtime skew: a gateway started before ``cron_report`` existed refuses the parameter. The
+    sender retries the same id without it, so the report lands (painted) instead of failing."""
+    from tools import bot_live_delivery as mailbox
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    seen = []
+
+    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result", cron_report=False):
+        seen.append(cron_report)
+        if cron_report:
+            raise RuntimeError("Bot Chat admission refused: invalid_params")
+        return {"status": "settled", "message": message, "delivery_id": delivery_id}
+
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "local-bot"})
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", fake_deliver)
+    assert _deliver_to_bot_chat({"id": "j1", "name": "n", "execution_id": "r1"}, "ok", "") is None
+    assert seen == [True, False]
 
 
 def test_failure_notice_reaches_the_owner_as_a_diagnostic(tmp_path, monkeypatch):
@@ -129,7 +171,7 @@ def test_failure_notice_reaches_the_owner_as_a_diagnostic(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seen = []
 
-    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result"):
+    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result", cron_report=False):
         seen.append(notification_category)
         return {"status": "settled", "message": message, "delivery_id": delivery_id,
                 "notification_category": notification_category}
@@ -166,7 +208,7 @@ def test_failure_notice_to_a_profile_hiding_warnings_is_suppressed_not_sent(tmp_
     (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n")
     admitted = []
 
-    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result"):
+    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result", cron_report=False):
         admitted.append(message)
         return {"status": "queued", "message": message, "delivery_id": delivery_id}
 
@@ -231,8 +273,8 @@ def test_tick_hands_legacy_pending_records_to_the_live_owner_once(tmp_path, monk
             profile="", home=str(tmp_path), sequence=1, for_failure=True)))
     admitted = []
 
-    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result"):
-        admitted.append((delivery_id, message, notification_category))
+    def fake_deliver(home, owner, message, *, delivery_id, notification_category="result", cron_report=False):
+        admitted.append((delivery_id, message, notification_category, cron_report))
         return {"status": "queued", "message": message, "delivery_id": delivery_id}
 
     monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "bot"})
@@ -241,7 +283,8 @@ def test_tick_hands_legacy_pending_records_to_the_live_owner_once(tmp_path, monk
     S.tick(verbose=False)
     S.tick(verbose=False)
 
-    assert [(key, category) for key, _, category in admitted] == [(queued, "diagnostic")]
-    assert 'Cronjob "Digest" output' in admitted[0][1] and "the report" in admitted[0][1]
+    assert [(key, category) for key, _, category, _ in admitted] == [(queued, "diagnostic")]
+    assert 'Scheduled task "Digest"' in admitted[0][1] and "the report" in admitted[0][1]
+    assert admitted[0][3] is True  # the deferred drain keeps the control-turn marker
     assert json.loads((root / f"{queued}.json").read_text())["status"] == "transferred"
     assert json.loads((root / f"{claimed}.json").read_text())["status"] == "claimed"

@@ -88,7 +88,8 @@ def _dispose(path: Path, record: dict) -> bool:
         try:
             receipt = deliver_to_live_owner(
                 home, owner, bot_chat_message(record.get("job") or {}, record["content"]),
-                delivery_id=record["id"], notification_category="diagnostic" if for_failure else "result")
+                delivery_id=record["id"], notification_category="diagnostic" if for_failure else "result",
+                cron_report=True)
         except Exception as exc:
             # The door is idempotent per id (a replay returns the existing receipt), so the
             # record stays queued for the next tick; log loudly once, quietly after.
