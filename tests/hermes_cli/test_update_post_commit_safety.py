@@ -57,6 +57,10 @@ _CHILD = textwrap.dedent('''
         "updates": {"refresh_cua_driver": False}}))
     # Service boundaries: record instead of touching the host's gateways/dashboards.
     from hermes_cli import gateway_migrate, update_cmd, update_cmd_fleet as fleet
+    from hermes_cli import source_health
+    # source is only a bookkeeping fixture; imports execute from root_checkout.
+    health = source_health.require_source_health
+    source_health.require_source_health = lambda _root: health(Path(root_checkout))
     from hermes_cli import update_cmd_fleet_verify as verify, update_cmd_maint as maint
     entered = cell / "migration-entered"
     gateway_migrate.maybe_auto_migrate_after_update = lambda: entered.write_text("entered")

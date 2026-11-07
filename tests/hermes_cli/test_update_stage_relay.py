@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,12 @@ def test_restart_after_a_failed_build_names_the_restart(tmp_path, monkeypatch):
     from hermes_cli import update_cmd, update_cmd_fleet
     from hermes_cli.update_finish import finish_update
     from hermes_cli.update_stage import publish_stage
+    from hermes_cli import source_health
+
+    # The empty root models update bookkeeping; validate the real code being run.
+    health = source_health.require_source_health
+    checkout = Path(source_health.__file__).resolve().parents[1]
+    monkeypatch.setattr(source_health, 'require_source_health', lambda _root: health(checkout))
 
     status = tmp_path / "hermes-update-status.1"
     monkeypatch.setenv("HERMES_UPDATE_STATUS_FILE", str(status))

@@ -209,7 +209,7 @@ _UPDATE_CRITICAL_FILES = (
     "hermes_cli/update_handoff.py", "hermes_cli/venv_sync.py", "pm/__init__.py", "pm/environments.py",
     "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
     "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
-    "hermes_constants.py")
+    "hermes_constants.py", "hermes_cli/source_health.py")
 
 
 def _record_update_step(step: str, ok: bool, detail: str = "") -> None:

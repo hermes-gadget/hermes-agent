@@ -30,7 +30,7 @@ BOOT = ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", 
         "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py", "hermes_cli/runtime_state.py",
         "hermes_cli/venv_sync.py", "hermes_cli/steward.py", "hermes_cli/stderr_timestamp.py",
         "hermes_cli/update_lock.py", "hermes_cli/update_custody.py", "pm/environments.py",
-        "pm/filesystem.py", "pm/paths.py")
+        "pm/filesystem.py", "pm/paths.py", "hermes_cli/source_health.py")
 _HOLDER = ("import sys, time\nfrom pathlib import Path\nsys.path.insert(0, sys.argv[1])\n"
            "from hermes_cli.update_lock import UpdateLock\n"
            "lock = UpdateLock(path=Path(sys.argv[2]) / 'owner', install_root=Path(sys.argv[2]))\n"
@@ -98,7 +98,9 @@ def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None
     (root / ".git/info/attributes").unlink()
 
     (tmp_path / "bin").mkdir()
-    launcher = _launchers._mint_shell_launcher("hermes", tmp_path / "bin", Path(sys.executable),
+    # Production launchers use store Python. The pytest venv's editable finder
+    # could import this working checkout when the fixture bootstrap is missing.
+    launcher = _launchers._mint_shell_launcher("hermes", tmp_path / "bin", Path(sys._base_executable),
                                                _launchers._launcher_script("hermes", root, None))
     assert launcher is not None
     return root, env, original, launcher
@@ -110,6 +112,7 @@ def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None
     ("hermes_cli/_early_recovery.py", True, True),
     ("hermes_cli/__init__.py", True, True),
     ("hermes_cli/update_lock.py", True, True),
+    ("hermes_cli/source_health.py", True, True),
     # An updater that predates publication: the launcher reads the same files from git's objects.
     ("hermes_bootstrap.py", True, False),
 ])
