@@ -401,11 +401,12 @@ class GatewayControlServer:
         if os.name == "nt":
             return None
         try:
-            from hermes_cli.gateway_runtime_discovery import home_mode_unsafe, socket_peer_uid
+            from hermes_cli.gateway_runtime_discovery import home_mode_unsafe, protected_home_owner, socket_peer_uid
             home = self._home
             info = home.lstat()
             if (home.absolute() != home.resolve() or not stat.S_ISDIR(info.st_mode)
-                    or info.st_uid != os.getuid() or home_mode_unsafe(info, home)):  # windows-footgun: ok — POSIX-only helper
+                    or (info.st_uid != os.getuid() and not protected_home_owner(info))  # windows-footgun: ok — POSIX-only helper
+                    or home_mode_unsafe(info, home)):  # windows-footgun: ok — POSIX-only helper
                 return None
             uid = socket_peer_uid(writer.get_extra_info("socket"))
             return f"uid:{uid}" if uid == os.getuid() else None  # windows-footgun: ok — POSIX-only helper

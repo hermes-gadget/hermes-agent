@@ -47,6 +47,27 @@ def _may_have_access_acl(path: Path) -> bool:
         return True
 
 
+def protected_home_owner(node: os.stat_result) -> bool:
+    """A Linux administrator-owned config parent, with mandatory kernel peer authentication.
+
+    systemd's single-user namespace shows an unmapped administrator as overflowuid. That
+    value alone is not trusted: require the caller-only identity mapping as well. The socket,
+    pointer and lock still belong to the caller; SO_PEERCRED, not the parent UID, authenticates
+    the gateway. No ownership or permission repair is appropriate for this intentional guard.
+    """
+    if not sys.platform.startswith('linux') or not hasattr(socket, 'SO_PEERCRED'):
+        return False
+    if node.st_uid == 0:
+        return True
+    try:
+        overflow = int(Path('/proc/sys/kernel/overflowuid').read_text(encoding='ascii').strip())
+        mapping = [tuple(map(int, line.split())) for line in Path('/proc/self/uid_map').read_text(encoding='ascii').splitlines()]
+    except (OSError, ValueError):
+        return False
+    uid = os.getuid()  # windows-footgun: ok — Linux-only namespace ownership
+    return node.st_uid == overflow and uid != overflow and mapping == [(uid, uid, 1)]
+
+
 def home_mode_unsafe(node: os.stat_result, path: Path) -> bool:
     """The profile home keeps the operator's mode (main's home policy: symlinked homes,
     HERMES_HOME_MODE 0701/0750). Only write by another user lets them swap the socket; read/search
@@ -66,12 +87,15 @@ def home_mode_unsafe(node: os.stat_result, path: Path) -> bool:
     try:
         import grp
         import pwd
-        user, group = pwd.getpwuid(node.st_uid), grp.getgrgid(node.st_gid)
+        # A protected parent belongs to the administrator, but its writable group must still
+        # be private to the gateway user. ACL masks and shared groups remain refused.
+        owner_uid = os.getuid() if protected_home_owner(node) else node.st_uid  # windows-footgun: ok — POSIX home policy
+        user, group = pwd.getpwuid(owner_uid), grp.getgrgid(node.st_gid)
         primary_members = {p.pw_uid for p in pwd.getpwall() if p.pw_gid == group.gr_gid}
     except (ImportError, KeyError, OSError):
         return True
     return not (group.gr_gid == user.pw_gid and group.gr_name == user.pw_name
-                and set(group.gr_mem) <= {user.pw_name} and primary_members <= {node.st_uid})
+                and set(group.gr_mem) <= {user.pw_name} and primary_members <= {owner_uid})
 
 
 def _private_node(path: Path, *, kind: str, home: bool = False) -> os.stat_result:
@@ -83,7 +107,7 @@ def _private_node(path: Path, *, kind: str, home: bool = False) -> os.stat_resul
             f"{path} is {stat.filemode(node.st_mode)}, expected {kind}",
         )
     expected_uid = os.getuid()  # windows-footgun: ok — POSIX socket path only
-    if node.st_uid != expected_uid:  # windows-footgun: ok — POSIX socket path only
+    if node.st_uid != expected_uid and not (home and protected_home_owner(node)):  # windows-footgun: ok — POSIX socket path only
         raise DiscoveryError(
             "unsafe_control_path",
             f"{path} is owned by uid {node.st_uid}, expected uid {expected_uid} (gateway user); "
@@ -132,7 +156,8 @@ def connect_private(home: Path, timeout: float) -> socket.socket:
         peer.settimeout(timeout)
         peer.connect(str(path))
         uid = socket_peer_uid(peer)
-        if uid is not None and uid != os.getuid():  # windows-footgun: ok — POSIX socket peer only
+        if ((uid is not None and uid != os.getuid())  # windows-footgun: ok — POSIX socket peer only
+                or (uid is None and home.lstat().st_uid != os.getuid())):  # windows-footgun: ok — POSIX socket peer only
             raise DiscoveryError("unsafe_control_peer")
         return peer
     except BaseException:
