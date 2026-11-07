@@ -212,6 +212,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-devops',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/devops/devops-heavy-job-admission',
                     'user-guide/skills/bundled/devops/devops-sdlc-review',
                   ],
                 },

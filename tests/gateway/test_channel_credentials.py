@@ -171,3 +171,42 @@ def test_channel_reservations_queue_cancel_and_wait_for_deferred_exit_without_pr
             context.run(scope.__exit__, None, None, None)
         executor.shutdown(wait=True)
     assert not coordinator.busy()
+
+
+def test_same_model_rotation_retains_channel_opt_out_and_next_turn_key(tmp_path, monkeypatch):
+    from run_agent import AIAgent
+    from tools.delegate_tool import delegate_task
+
+    with FakeLLMServer(api_key=[f"profile-{label}" for label in LABELS]) as host:
+        _home, cfg, config, source = _setup(tmp_path, monkeypatch, host.base_url)
+        config.platforms[Platform.DISCORD] = PlatformConfig.from_dict({"channel_overrides": {"experimental": {
+            "model": MODEL, "provider": "opencode-go", "fallback_providers": [],
+            "credentials": {"main": LABELS[0], "fallbacks": LABELS[1:], "allow_exhausted_free_models": True},
+            "delegation": {"enabled": False},
+        }}})
+        runner = SimpleNamespace(config=config, _resolve_session_key_or_none=lambda *args: None)
+        with scoped_channel_delegation(delegation_for_source(config, source)):
+            model, runtime = GatewayTurnMixin._resolve_session_agent_runtime(runner, source=source, user_config=cfg)
+            parent = AIAgent(
+                model=model, **runtime, enabled_toolsets=["delegation"], quiet_mode=True,
+                skip_context_files=True, skip_memory=True, max_iterations=3,
+                platform="discord", chat_id=source.chat_id,
+            )
+            try:
+                denied = json.loads(delegate_task(tasks=[{"goal": "Must remain in this parent."}],
+                                                  background=False, parent_agent=parent))
+                assert "disabled in this channel" in denied["error"]
+                assert not host.requests
+                parent.run_conversation(user_message="First turn.")
+                recovered, _retried = parent._recover_with_credential_pool(
+                    status_code=429, has_retried_429=True, error_context={"message": "Endpoint unavailable"})
+                assert recovered is True
+                assert parent.api_key == "profile-worker-a"
+                parent.run_conversation(user_message="Continue after rotating the key.")
+                requests = [r for r in host.requests if r.get("body")]
+                assert [r["auth"] for r in requests] == ["Bearer profile-main", "Bearer profile-worker-a"]
+                assert {r["body"]["model"] for r in requests} == {MODEL}
+                assert parent._fallback_chain == []
+                assert credential_coordinator_for_source(config, source).workers == ()
+            finally:
+                parent.close()

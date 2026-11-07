@@ -148,7 +148,7 @@ def admission_env(tmp_path, monkeypatch):
     # the venv package's stamp digest + lock seed read core/uv.lock —
     # produce a real one (no deps: uv lock resolves offline)
     subprocess.run(
-        [shutil.which("uv"), "lock"], cwd=core, check=True,
+        [shutil.which("uv"), "lock", "--offline", "--python", sys.executable], cwd=core, check=True,
         capture_output=True, text=True, timeout=120,
     )
     home = tmp_path / "home"
@@ -621,7 +621,7 @@ def test_plugin_requiring_a_newer_hermes_sits_out_until_hermes_fits(admission_en
     manifest = core / "pyproject.toml"  # a selected extra naming core binds to the workspace root
     manifest.write_text(manifest.read_text().replace('name = "fake-core"', 'name = "hermes-agent"')
                         + "[project.optional-dependencies]\nchosen = []\n")  # core's extras are what a sync selects
-    subprocess.run([shutil.which("uv"), "lock"], cwd=core, check=True, capture_output=True, timeout=120)
+    subprocess.run([shutil.which("uv"), "lock", "--offline", "--python", sys.executable], cwd=core, check=True, capture_output=True, timeout=120)
     running = {"version": "1.0.0"}
     monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: running["version"])
     for name in ("fits", "needs-newer"):

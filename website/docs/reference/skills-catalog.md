@@ -48,6 +48,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`heavy-job-admission`](../user-guide/skills/bundled/devops/devops-heavy-job-admission.md) | Serialize heavy jobs with host memory preflight. | `devops/heavy-job-admission` |
 | [`sdlc-review`](../user-guide/skills/bundled/devops/devops-sdlc-review.md) | Review Kanban handoffs and route verified outcomes. | `devops/sdlc-review` |
 
 ## email

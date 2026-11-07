@@ -11,9 +11,12 @@ def test_admission_skill_is_available_through_native_skill_reader(tmp_path, monk
     from tools import skills_tool
 
     bundled = Path(__file__).resolve().parents[2] / "skills"
-    active = tmp_path / "skills"
-    monkeypatch.setattr(skills_tool, "_skill_search_dirs", lambda: ([], [bundled], active))
-    indexed = {row["name"]: row for row in skills_tool._find_all_skills()}
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    (home / "config.yaml").write_text(json.dumps({"skills": {"external_dirs": [str(bundled)]}}), encoding="utf-8")
+    indexed = {row["name"]: row for row in skills_tool.find_all_skills()}
     name = "heavy-job-admission"
     loaded = json.loads(skills_tool.skill_view(name, preprocess=False))
     assert loaded["success"] is True
