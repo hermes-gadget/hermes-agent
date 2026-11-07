@@ -417,6 +417,12 @@ async def _check_error_cancel_before_entry(monkeypatch, adapter, app, delivered)
         await app.process_update(update(app.bot))
         await app.stop()
     assert len(scheduled) == 1 and not effects
+    # stop() gathers PTB's tasks, but Python 3.14 can gather an already-done task
+    # without yielding to its queued done callbacks. Observe completion after
+    # Hermes's earlier-registered claim-release callback, rather than a sleep.
+    released = asyncio.get_running_loop().create_future()
+    scheduled[0][0].add_done_callback(lambda _done: released.set_result(None))
+    await released
     assert not adapter._inflight_update_ids and not adapter._seen_update_ids
     # The cancelled PTB task never awaited the callback coroutine: it must be closed too.
     try:

@@ -17,6 +17,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -303,12 +304,19 @@ def test_git_dates_added_is_first_commit_updated_is_last_and_renames_keep_added(
 
     dates = mod.load_git_dates(catalog)
 
-    assert dates["alpha.yaml"] == {"addedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-02-01T00:00:00Z"}
-    assert dates["new-name.yaml"] == {"addedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-03-01T00:00:00Z"}
+    # Git versions render UTC as either Z or +00:00; the history contract is
+    # the instant and rename ancestry, not the spelling of the UTC offset.
+    first = datetime(2026, 1, 1, tzinfo=UTC)
+    assert {k: datetime.fromisoformat(v) for k, v in dates["alpha.yaml"].items()} == {
+        "addedAt": first, "updatedAt": datetime(2026, 2, 1, tzinfo=UTC),
+    }
+    assert {k: datetime.fromisoformat(v) for k, v in dates["new-name.yaml"].items()} == {
+        "addedAt": first, "updatedAt": datetime(2026, 3, 1, tzinfo=UTC),
+    }
     entries = mod.load_catalog_entries(catalog, dates=dates)
     by_name = {e["name"]: e for e in entries}
-    assert by_name["alpha"]["addedAt"] == "2026-01-01T00:00:00Z"
-    assert by_name["alpha"]["updatedAt"] == "2026-02-01T00:00:00Z"
+    assert by_name["alpha"]["addedAt"] == dates["alpha.yaml"]["addedAt"]
+    assert by_name["alpha"]["updatedAt"] == dates["alpha.yaml"]["updatedAt"]
 
 
 def test_git_dates_are_null_outside_a_repository(mod, tmp_path):
