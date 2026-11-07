@@ -942,6 +942,8 @@ class SessionSchemaMixin:
         """Create tables and FTS if missing, reconcile columns, run data migrations. Column
         additions are declarative via _reconcile_columns(), so reordered migrations can
         never skip a column; schema_version remains for data migrations only."""
+        from hermes_state_recovery_gate import require_restored_runtime_ledger
+        require_restored_runtime_ledger(self._conn)
         # Startup-watchdog lease: on multi-GB files this is I/O-bound (near-zero CPU), which
         # the watchdog's CPU fallback would misread as a parked deadlock.
         # Declare a startup-watchdog progress lease before potentially long synchronous work: on multi-GB

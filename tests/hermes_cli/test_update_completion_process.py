@@ -206,7 +206,12 @@ def transition(tmp_path):
         "receipt": {"update_id": "b" * 32, "outcome": "running", "steps": []},
         "windows_resume": {"resume_needed": True, "profiles": {"work": [123]}},
     }
-    return root, git, old, new, request
+    try:
+        yield root, git, old, new, request
+    finally:
+        # EnvBuilder copies several interpreter binaries. Release this test's
+        # environment before the next parameter case, rather than at file end.
+        shutil.rmtree(selected)
 
 
 @pytest.mark.parametrize("bom_boundary", [None, "request", "receipt"])
